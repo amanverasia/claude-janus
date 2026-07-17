@@ -1,0 +1,16 @@
+# Local credentials and runtime state
+router.conf
+mappings.conf
+.env
+.env.*
+!.env.example
+
+# Test/editor artifacts
+.DS_Store
+*.swp
+*.swo
+*.log
+*.pyc
+__pycache__/
+coverage/
+.tmp/

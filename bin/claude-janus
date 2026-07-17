@@ -1,0 +1,676 @@
+#!/usr/bin/env bash
+# claude-janus — launch Claude Code through the Janus Anthropic-compatible API.
+#
+# This wrapper keeps independent Janus model mappings for Claude Code's Opus,
+# Sonnet, and Haiku tiers. At startup, choose the tier to launch; inside Claude
+# Code, /model can switch between those same saved mappings.
+#
+# The wrapper is isolated: ~/.zshrc and the ordinary `claude` command remain
+# untouched. Janus variables apply only to the launched Claude Code process.
+#
+# Automation:
+#   CLAUDE_JANUS_TIER=sonnet claude-janus -p "hello"
+#   CLAUDE_JANUS_DRYRUN=1 CLAUDE_JANUS_TIER=haiku claude-janus
+set -euo pipefail
+umask 077
+
+# ---- Janus connection -------------------------------------------------------
+# Keep credentials out of this script. Environment variables take precedence
+# over the local config file so CI and one-off sessions require no disk secret.
+ROUTER_CONFIG="${CLAUDE_JANUS_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/claude-janus/router.conf}"
+ENV_JANUS_BASE_URL="${JANUS_BASE_URL:-}"
+ENV_JANUS_API_KEY="${JANUS_API_KEY:-}"
+CONFIG_JANUS_BASE_URL=""
+CONFIG_JANUS_API_KEY=""
+
+if [[ -f "$ROUTER_CONFIG" ]]; then
+  while IFS='=' read -r key value || [[ -n "${key:-}" ]]; do
+    [[ -z "$key" || "$key" == \#* ]] && continue
+    case "$key" in
+      JANUS_BASE_URL) CONFIG_JANUS_BASE_URL="$value" ;;
+      JANUS_API_KEY)  CONFIG_JANUS_API_KEY="$value" ;;
+    esac
+  done < "$ROUTER_CONFIG"
+fi
+
+JANUS_BASE_URL="${ENV_JANUS_BASE_URL:-$CONFIG_JANUS_BASE_URL}"
+JANUS_API_KEY="${ENV_JANUS_API_KEY:-$CONFIG_JANUS_API_KEY}"
+JANUS_BASE_URL="${JANUS_BASE_URL%/}" # Claude appends /v1/messages
+
+BYPASS_ROUTER_CONFIG=0
+for arg in "$@"; do
+  case "$arg" in -h|--help|-v|--version) BYPASS_ROUTER_CONFIG=1 ;; esac
+done
+
+if [[ $BYPASS_ROUTER_CONFIG -eq 0 && ( 
+  -z "$JANUS_BASE_URL" || -z "$JANUS_API_KEY" ||
+  "$JANUS_BASE_URL" == *'your-janus-router.example'* ||
+  "$JANUS_API_KEY" == 'replace-with-your-key'
+) ]]; then
+  printf 'claude-janus: router configuration is missing or still uses placeholders\n\n' >&2
+  printf 'Create %s with:\n\n' "$ROUTER_CONFIG" >&2
+  printf '  JANUS_BASE_URL=https://your-janus-router.example\n' >&2
+  printf '  JANUS_API_KEY=replace-with-your-key\n\n' >&2
+  printf 'Or export JANUS_BASE_URL and JANUS_API_KEY for this invocation.\n' >&2
+  exit 2
+fi
+
+# ---- Curated Janus routes ---------------------------------------------------
+CLAUDE_OPUS="openrouter/anthropic/claude-opus-4.8"
+CLAUDE_SONNET="openrouter/anthropic/claude-sonnet-5"
+CLAUDE_HAIKU="openrouter/anthropic/claude-haiku-4.5"
+DEEPSEEK_PRO="deepseek/deepseek-v4-pro"
+DEEPSEEK_FLASH="deepseek/deepseek-v4-flash"
+GLM_47="zhipu/glm-4.7"
+
+# ---- Saved tier mappings ----------------------------------------------------
+STATE_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/claude-janus"
+CONFIG_FILE="$STATE_DIR/mappings.conf"
+mkdir -p "$STATE_DIR"
+chmod 700 "$STATE_DIR" 2>/dev/null || true
+
+# Safe initial configuration. Claude/OpenRouter routes remain selectable, but
+# Sonnet and Haiku default to routes verified end-to-end with Claude Code tools.
+OPUS_MODEL="$CLAUDE_OPUS"
+SONNET_MODEL="$DEEPSEEK_PRO"
+HAIKU_MODEL="$GLM_47"
+DEFAULT_TIER="sonnet"
+
+valid_tier() {
+  case "$1" in opus|sonnet|haiku) return 0 ;; *) return 1 ;; esac
+}
+
+valid_model_value() {
+  [[ -n "$1" && "$1" != *$'\n'* && "$1" != *'='* ]]
+}
+
+load_config() {
+  [[ -f "$CONFIG_FILE" ]] || return 0
+  local key value
+  while IFS='=' read -r key value || [[ -n "${key:-}" ]]; do
+    case "$key" in
+      OPUS_MODEL)    valid_model_value "$value" && OPUS_MODEL="$value" ;;
+      SONNET_MODEL)  valid_model_value "$value" && SONNET_MODEL="$value" ;;
+      HAIKU_MODEL)   valid_model_value "$value" && HAIKU_MODEL="$value" ;;
+      DEFAULT_TIER)  valid_tier "$value" && DEFAULT_TIER="$value" ;;
+    esac
+  done < "$CONFIG_FILE"
+}
+
+save_config() {
+  {
+    printf 'OPUS_MODEL=%s\n' "$OPUS_MODEL"
+    printf 'SONNET_MODEL=%s\n' "$SONNET_MODEL"
+    printf 'HAIKU_MODEL=%s\n' "$HAIKU_MODEL"
+    printf 'DEFAULT_TIER=%s\n' "$DEFAULT_TIER"
+  } > "$CONFIG_FILE"
+  chmod 600 "$CONFIG_FILE" 2>/dev/null || true
+}
+
+load_config
+[[ -f "$CONFIG_FILE" ]] || save_config
+
+# ---- Terminal UI ------------------------------------------------------------
+# Full-screen menus are enabled only for an actual interactive terminal. Piped
+# input, dry-runs, --help, and CLAUDE_JANUS_TIER automation stay scroll-safe.
+UI_ENABLED=0
+MENU_USED=0
+if [[ -t 0 && -t 2 && -z "${CLAUDE_JANUS_DRYRUN:-}" ]]; then
+  UI_ENABLED=1
+fi
+
+if [[ -t 2 && -z "${NO_COLOR:-}" ]]; then
+  RESET=$'\033[0m'; BOLD=$'\033[1m'; DIM=$'\033[2m'
+  CYAN=$'\033[36m'; BLUE=$'\033[34m'; GREEN=$'\033[32m'
+  YELLOW=$'\033[33m'; RED=$'\033[31m'; MAGENTA=$'\033[35m'
+else
+  RESET=""; BOLD=""; DIM=""; CYAN=""; BLUE=""; GREEN=""
+  YELLOW=""; RED=""; MAGENTA=""
+fi
+
+read_reply() {
+  local answer=""
+  if [[ -t 0 ]]; then
+    # Readline gives custom model fields normal left/right/history editing.
+    IFS= read -er answer || answer=""
+  elif { exec 3</dev/tty; } 2>/dev/null; then
+    IFS= read -er answer <&3 || answer=""
+    exec 3<&- 2>/dev/null || true
+  else
+    IFS= read -r answer || answer=""
+  fi
+  printf '%s' "$answer"
+}
+
+# Keep the terminal non-canonical/no-echo for the complete render→keypress
+# cycle. Using `read -s` alone leaves a tiny race where escape bytes can echo
+# after the menu is drawn but before read starts.
+MENU_TTY_ORIGINAL=""
+MENU_TTY_RAW=0
+if [[ $UI_ENABLED -eq 1 ]]; then
+  MENU_TTY_ORIGINAL="$(stty -g 2>/dev/null || true)"
+fi
+
+menu_tty_raw() {
+  [[ $UI_ENABLED -eq 1 && $MENU_TTY_RAW -eq 0 && -n "$MENU_TTY_ORIGINAL" ]] || return 0
+  stty -echo -icanon min 1 time 0 2>/dev/null || return 0
+  MENU_TTY_RAW=1
+}
+
+menu_tty_restore() {
+  [[ $MENU_TTY_RAW -eq 1 && -n "$MENU_TTY_ORIGINAL" ]] || return 0
+  stty "$MENU_TTY_ORIGINAL" 2>/dev/null || true
+  MENU_TTY_RAW=0
+}
+
+trap 'menu_tty_restore' EXIT
+trap 'menu_tty_restore; exit 130' INT
+trap 'menu_tty_restore; exit 143' TERM HUP
+
+# Decode one terminal key without echoing escape bytes into the prompt.
+# Result is returned in MENU_KEY: up/down/left/right/home/end/enter/esc, or the
+# literal shortcut character. This is used only when UI_ENABLED=1.
+read_menu_key() {
+  local key="" suffix=""
+  MENU_KEY=""
+  if ! IFS= read -rsn1 key; then
+    MENU_KEY="esc"
+    return 0
+  fi
+
+  case "$key" in
+    "") MENU_KEY="enter" ;;
+    $'\033')
+      # Plain arrows are ESC [ A/B/C/D (some terminals send ESC O A/B/C/D).
+      IFS= read -rsn2 -t 0.12 suffix || true
+      case "$suffix" in
+        '[A'|'OA') MENU_KEY="up" ;;
+        '[B'|'OB') MENU_KEY="down" ;;
+        '[C'|'OC') MENU_KEY="right" ;;
+        '[D'|'OD') MENU_KEY="left" ;;
+        '[H'|'OH') MENU_KEY="home" ;;
+        '[F'|'OF') MENU_KEY="end" ;;
+        *) MENU_KEY="esc" ;;
+      esac
+      ;;
+    *) MENU_KEY="$key" ;;
+  esac
+}
+
+# Drive a full-screen menu renderer with arrow keys. The renderer receives the
+# highlighted 1-based row followed by any extra arguments. Selection is placed
+# in MENU_RESULT; Esc/Q/B return "back". Number shortcuts remain available.
+menu_navigate() {
+  local count="$1" cursor="$2" renderer="$3" shortcuts="$4"
+  local i pressed
+  shift 4
+  MENU_RESULT=""
+  menu_tty_raw
+  while true; do
+    "$renderer" "$cursor" "$@"
+    read_menu_key
+    case "$MENU_KEY" in
+      up)   (( cursor = cursor <= 1 ? count : cursor - 1 )) ;;
+      down) (( cursor = cursor >= count ? 1 : cursor + 1 )) ;;
+      home) cursor=1 ;;
+      end)  cursor="$count" ;;
+      left|right) ;; # safely consume; never print escape sequences
+      enter)
+        MENU_RESULT="$cursor"
+        menu_tty_restore
+        return 0
+        ;;
+      esc|q|Q|b|B)
+        MENU_RESULT="back"
+        menu_tty_restore
+        return 0
+        ;;
+      [1-9])
+        if (( 10#$MENU_KEY <= count )); then
+          MENU_RESULT="$MENU_KEY"
+          menu_tty_restore
+          return 0
+        fi
+        printf '\a' >&2
+        ;;
+      *)
+        pressed="${MENU_KEY,,}"
+        for ((i=0; i<${#shortcuts}; i++)); do
+          if [[ "$pressed" == "${shortcuts:i:1}" ]]; then
+            MENU_RESULT="$((i + 1))"
+            menu_tty_restore
+            return 0
+          fi
+        done
+        printf '\a' >&2
+        ;;
+    esac
+  done
+}
+
+clear_screen() {
+  [[ $UI_ENABLED -eq 1 ]] || return 0
+  printf '\033[2J\033[H' >&2
+}
+
+screen_header() {
+  local title="$1" subtitle="${2:-}"
+  clear_screen
+  printf '%s╭─ CLAUDE CODE · JANUS ROUTER ─────────────────────────────────────%s\n' "$CYAN" "$RESET" >&2
+  printf '│ %s%s%s\n' "$BOLD" "$title" "$RESET" >&2
+  [[ -z "$subtitle" ]] || printf '│ %s%s%s\n' "$DIM" "$subtitle" "$RESET" >&2
+  printf '%s╰───────────────────────────────────────────────────────────────────%s\n\n' "$CYAN" "$RESET" >&2
+}
+
+pause_screen() {
+  [[ $UI_ENABLED -eq 1 ]] || return 0
+  menu_tty_raw
+  printf '\n%sPress any key to continue…%s ' "$DIM" "$RESET" >&2
+  read_menu_key
+  menu_tty_restore
+}
+
+show_message() {
+  local kind="$1" title="$2" message="$3" color icon
+  case "$kind" in
+    success) color="$GREEN"; icon='✓' ;;
+    warning) color="$YELLOW"; icon='!' ;;
+    error)   color="$RED"; icon='×' ;;
+    *)       color="$CYAN"; icon='•' ;;
+  esac
+  if [[ $UI_ENABLED -eq 1 ]]; then
+    # Enter no-echo mode before drawing so even an immediate keypress cannot
+    # race with the confirmation prompt and become visible text.
+    menu_tty_raw
+    screen_header "$title"
+    printf '  %s%s%s  %s\n' "$color$BOLD" "$icon" "$RESET" "$message" >&2
+    pause_screen
+  else
+    printf '%s%s:%s %s\n' "$color$BOLD" "$title" "$RESET" "$message" >&2
+  fi
+}
+
+model_label() {
+  case "$1" in
+    "$CLAUDE_OPUS")    printf 'Claude Opus 4.8' ;;
+    "$CLAUDE_SONNET")  printf 'Claude Sonnet 5' ;;
+    "$CLAUDE_HAIKU")   printf 'Claude Haiku 4.5' ;;
+    "$DEEPSEEK_PRO")   printf 'DeepSeek V4 Pro' ;;
+    "$DEEPSEEK_FLASH") printf 'DeepSeek V4 Flash' ;;
+    "$GLM_47")         printf 'GLM 4.7' ;;
+    *)                  printf '%s' "$1" ;;
+  esac
+}
+
+model_badge() {
+  case "$1" in
+    "$CLAUDE_OPUS"|"$CLAUDE_SONNET"|"$DEEPSEEK_PRO"|"$DEEPSEEK_FLASH"|"$GLM_47")
+      printf '%sREADY%s' "$GREEN" "$RESET" ;;
+    "$CLAUDE_HAIKU")
+      printf '%sLIMITED%s' "$YELLOW" "$RESET" ;;
+    *)
+      printf '%sCUSTOM%s' "$MAGENTA" "$RESET" ;;
+  esac
+}
+
+tier_label() {
+  case "$1" in
+    opus) printf 'Opus' ;;
+    sonnet) printf 'Sonnet' ;;
+    haiku) printf 'Haiku' ;;
+  esac
+}
+
+model_for_tier() {
+  case "$1" in
+    opus) printf '%s' "$OPUS_MODEL" ;;
+    sonnet) printf '%s' "$SONNET_MODEL" ;;
+    haiku) printf '%s' "$HAIKU_MODEL" ;;
+  esac
+}
+
+print_mapping_row() {
+  local tier="$1" model="$2" marker=' '
+  [[ "$tier" != "$DEFAULT_TIER" ]] || marker='●'
+  printf '  %s%s %-7s%s  %s%-26s%s  [%s]\n' \
+    "$CYAN" "$marker" "$(tier_label "$tier")" "$RESET" \
+    "$BOLD" "$(model_label "$model")" "$RESET" "$(model_badge "$model")" >&2
+  printf '      %s%s%s\n' "$DIM" "$model" "$RESET" >&2
+}
+
+print_mappings() {
+  printf '%sSAVED TIER MAP%s  %s● default%s\n\n' "$BOLD" "$RESET" "$DIM" "$RESET" >&2
+  print_mapping_row opus "$OPUS_MODEL"
+  print_mapping_row sonnet "$SONNET_MODEL"
+  print_mapping_row haiku "$HAIKU_MODEL"
+}
+
+menu_choice() {
+  local cursor="$1" index="$2" shortcut="$3" label="$4" suffix="${5:-}"
+  local marker=' '
+  if (( cursor == index )); then
+    marker="${CYAN}${BOLD}❯${RESET}"
+    printf '  %s  %s[%s]%s  %s%s%s' \
+      "$marker" "$CYAN$BOLD" "$shortcut" "$RESET" "$BOLD" "$label" "$RESET" >&2
+  else
+    printf '     %s[%s]%s  %s' "$DIM" "$shortcut" "$RESET" "$label" >&2
+  fi
+  [[ -z "$suffix" ]] || printf '  %s' "$suffix" >&2
+  printf '\n' >&2
+}
+
+print_model_option() {
+  local cursor="$1" number="$2" label="$3" model="$4" note="${5:-}"
+  menu_choice "$cursor" "$number" "$number" "$label" "[$(model_badge "$model")]"
+  printf '         %s%s%s\n' "$DIM" "$model" "$RESET" >&2
+  [[ -z "$note" ]] || printf '         %s%s%s\n' "$YELLOW" "$note" "$RESET" >&2
+}
+
+# Return 0 if exact model exists, 1 if catalog is reachable but it does not,
+# and 2 if the authenticated catalog cannot be checked.
+model_exists() {
+  local catalog
+  command -v curl >/dev/null 2>&1 || return 2
+  command -v jq >/dev/null 2>&1 || return 2
+  catalog="$(curl -fsS --max-time 8 \
+    -H "Authorization: Bearer $JANUS_API_KEY" \
+    "$JANUS_BASE_URL/v1/models" 2>/dev/null)" || return 2
+  jq -e --arg id "$1" 'any(.data[]; .id == $id)' >/dev/null 2>&1 <<< "$catalog"
+}
+
+pick_custom_model() {
+  local target_var="$1" current="$2" custom rc
+  screen_header "Use a custom Janus model" "The ID will be checked against authenticated /v1/models"
+  printf 'Current  %s%s%s\n\n' "$DIM" "$current" "$RESET" >&2
+  printf 'Exact model ID %s[Enter cancels]%s: ' "$DIM" "$RESET" >&2
+  custom="$(read_reply)"
+  [[ -n "$custom" ]] || return 1
+  if ! valid_model_value "$custom"; then
+    show_message error "Invalid model ID" "The value cannot be empty or contain '=' or a newline."
+    return 1
+  fi
+
+  if model_exists "$custom"; then
+    printf -v "$target_var" '%s' "$custom"
+    return 0
+  else
+    rc=$?
+    if [[ $rc -eq 1 ]]; then
+      show_message error "Model not found" "Janus did not advertise '$custom'; the current mapping was kept."
+      return 1
+    fi
+    show_message warning "Catalog unavailable" "The ID could not be validated, so it will be saved as entered."
+    printf -v "$target_var" '%s' "$custom"
+    return 0
+  fi
+}
+
+render_tier_model_menu() {
+  local cursor="$1" tier="$2" current="$3"
+  screen_header "Map the $(tier_label "$tier") tier" "Current: $(model_label "$current") · $current"
+  print_model_option "$cursor" 1 'Claude Opus 4.8' "$CLAUDE_OPUS" 'OpenRouter-backed; full Claude Code turn verified'
+  print_model_option "$cursor" 2 'Claude Sonnet 5' "$CLAUDE_SONNET" 'OpenRouter-backed; chat and tool loop verified'
+  print_model_option "$cursor" 3 'Claude Haiku 4.5' "$CLAUDE_HAIKU" 'Adaptive-thinking main turns still fail upstream'
+  print_model_option "$cursor" 4 'DeepSeek V4 Pro' "$DEEPSEEK_PRO" 'Chat and tool loop verified'
+  print_model_option "$cursor" 5 'DeepSeek V4 Flash' "$DEEPSEEK_FLASH" 'Fast route; interactive Claude Code verified'
+  print_model_option "$cursor" 6 'GLM 4.7' "$GLM_47" 'Claude Code main turn verified'
+  menu_choice "$cursor" 7 7 'Enter another exact Janus model ID'
+  printf '\n  %s↑/↓ move · Enter select · Esc back · 1–7 shortcut%s\n' "$DIM" "$RESET" >&2
+}
+
+configure_tier() {
+  local tier="$1" target_var current reply selected="" cursor=1
+  case "$tier" in
+    opus) target_var="OPUS_MODEL"; current="$OPUS_MODEL" ;;
+    sonnet) target_var="SONNET_MODEL"; current="$SONNET_MODEL" ;;
+    haiku) target_var="HAIKU_MODEL"; current="$HAIKU_MODEL" ;;
+  esac
+  case "$current" in
+    "$CLAUDE_OPUS") cursor=1 ;;
+    "$CLAUDE_SONNET") cursor=2 ;;
+    "$CLAUDE_HAIKU") cursor=3 ;;
+    "$DEEPSEEK_PRO") cursor=4 ;;
+    "$DEEPSEEK_FLASH") cursor=5 ;;
+    "$GLM_47") cursor=6 ;;
+    *) cursor=7 ;;
+  esac
+
+  while true; do
+    if [[ $UI_ENABLED -eq 1 ]]; then
+      menu_navigate 7 "$cursor" render_tier_model_menu 'oshpfgc' "$tier" "$current"
+      reply="$MENU_RESULT"
+      [[ "$reply" != back ]] || return 0
+      cursor="$reply"
+    else
+      render_tier_model_menu 0 "$tier" "$current"
+      printf 'Choice [Enter keeps current]: ' >&2
+      reply="$(read_reply)"
+    fi
+
+    case "$reply" in
+      ""|b|B) return 0 ;;
+      1|o|O|opus|Opus) selected="$CLAUDE_OPUS" ;;
+      2|s|S|sonnet|Sonnet) selected="$CLAUDE_SONNET" ;;
+      3|h|H|haiku|Haiku) selected="$CLAUDE_HAIKU" ;;
+      4|p|P|pro|Pro) selected="$DEEPSEEK_PRO" ;;
+      5|f|F|flash|Flash) selected="$DEEPSEEK_FLASH" ;;
+      6|g|G|glm|GLM) selected="$GLM_47" ;;
+      7|c|C|custom|Custom)
+        if pick_custom_model "$target_var" "$current"; then
+          save_config
+          show_message success "Mapping saved" "$(tier_label "$tier") now uses $(model_label "${!target_var}")."
+        fi
+        return 0
+        ;;
+      *)
+        show_message error "Unknown choice" "Choose 1–7, B, or press Enter."
+        continue
+        ;;
+    esac
+
+    printf -v "$target_var" '%s' "$selected"
+    save_config
+    show_message success "Mapping saved" "$(tier_label "$tier") now uses $(model_label "$selected")."
+    return 0
+  done
+}
+
+render_default_tier_menu() {
+  local cursor="$1"
+  screen_header "Choose the default startup tier" "Pressing Enter on launch will use this tier"
+  menu_choice "$cursor" 1 1 "Opus    → $(model_label "$OPUS_MODEL")"
+  menu_choice "$cursor" 2 2 "Sonnet  → $(model_label "$SONNET_MODEL")"
+  menu_choice "$cursor" 3 3 "Haiku   → $(model_label "$HAIKU_MODEL")"
+  printf '\n  %s↑/↓ move · Enter select · Esc back · 1–3 shortcut%s\n' "$DIM" "$RESET" >&2
+}
+
+configure_default_tier() {
+  local reply cursor=1
+  case "$DEFAULT_TIER" in opus) cursor=1;; sonnet) cursor=2;; haiku) cursor=3;; esac
+  if [[ $UI_ENABLED -eq 1 ]]; then
+    menu_navigate 3 "$cursor" render_default_tier_menu 'osh'
+    reply="$MENU_RESULT"
+    [[ "$reply" != back ]] || return 0
+  else
+    render_default_tier_menu 0
+    printf 'Choice [Enter keeps %s]: ' "$(tier_label "$DEFAULT_TIER")" >&2
+    reply="$(read_reply)"
+  fi
+  case "$reply" in
+    "") return 0 ;;
+    1|o|O|opus|Opus) DEFAULT_TIER="opus" ;;
+    2|s|S|sonnet|Sonnet) DEFAULT_TIER="sonnet" ;;
+    3|h|H|haiku|Haiku) DEFAULT_TIER="haiku" ;;
+    *) show_message error "Unknown choice" "The default tier was not changed."; return 0 ;;
+  esac
+  save_config
+  show_message success "Default updated" "$(tier_label "$DEFAULT_TIER") will be preselected at startup."
+}
+
+render_config_menu() {
+  local cursor="$1"
+  screen_header "Configure tier mappings" "Changes are saved to $CONFIG_FILE"
+  print_mappings
+  printf '\n%sEDIT%s\n\n' "$BOLD" "$RESET" >&2
+  menu_choice "$cursor" 1 1 'Change Opus mapping'
+  menu_choice "$cursor" 2 2 'Change Sonnet mapping'
+  menu_choice "$cursor" 3 3 'Change Haiku mapping'
+  menu_choice "$cursor" 4 4 'Change default startup tier'
+  printf '\n  %s↑/↓ move · Enter select · Esc back · 1–4 shortcut%s\n' "$DIM" "$RESET" >&2
+}
+
+configure_menu() {
+  local reply cursor=1
+  while true; do
+    if [[ $UI_ENABLED -eq 1 ]]; then
+      menu_navigate 4 "$cursor" render_config_menu 'oshd'
+      reply="$MENU_RESULT"
+      [[ "$reply" != back ]] || return 0
+      cursor="$reply"
+    else
+      render_config_menu 0
+      printf 'Choice: ' >&2
+      reply="$(read_reply)"
+    fi
+    case "$reply" in
+      1|o|O|opus|Opus) configure_tier opus ;;
+      2|s|S|sonnet|Sonnet) configure_tier sonnet ;;
+      3|h|H|haiku|Haiku) configure_tier haiku ;;
+      4|d|D|default|Default) configure_default_tier ;;
+      ""|b|B) return 0 ;;
+      *) show_message error "Unknown choice" "Choose 1–4 or B." ;;
+    esac
+  done
+}
+
+render_startup_menu() {
+  local cursor="$1"
+  screen_header "Choose a Claude Code tier" "Select a mapping for this session, or press Enter for the highlighted tier"
+  print_mappings
+  printf '\n%sSTART SESSION%s\n\n' "$BOLD" "$RESET" >&2
+  menu_choice "$cursor" 1 1 "Opus    → $(model_label "$OPUS_MODEL")"
+  menu_choice "$cursor" 2 2 "Sonnet  → $(model_label "$SONNET_MODEL")"
+  menu_choice "$cursor" 3 3 "Haiku   → $(model_label "$HAIKU_MODEL")"
+  menu_choice "$cursor" 4 4 'Configure mappings'
+  printf '\n  %s↑/↓ move · Enter select · Esc/Q cancel · 1–4 shortcut%s\n' "$DIM" "$RESET" >&2
+}
+
+# ---- Determine startup tier -------------------------------------------------
+START_TIER="$DEFAULT_TIER"
+HAS_MODEL_ARG=0
+PASSTHROUGH_ONLY=0
+expect_model_value=0
+for arg in "$@"; do
+  if [[ $expect_model_value -eq 1 ]]; then
+    HAS_MODEL_ARG=1
+    expect_model_value=0
+    continue
+  fi
+  case "$arg" in
+    --model) expect_model_value=1 ;;
+    --model=*) HAS_MODEL_ARG=1 ;;
+    -h|--help|-v|--version) PASSTHROUGH_ONLY=1 ;;
+  esac
+done
+[[ $expect_model_value -eq 0 ]] || { printf 'claude-janus: --model requires a value\n' >&2; exit 2; }
+
+if [[ -n "${CLAUDE_JANUS_TIER:-}" ]]; then
+  if ! valid_tier "$CLAUDE_JANUS_TIER"; then
+    printf 'claude-janus: CLAUDE_JANUS_TIER must be opus, sonnet, or haiku\n' >&2
+    exit 2
+  fi
+  START_TIER="$CLAUDE_JANUS_TIER"
+elif [[ $HAS_MODEL_ARG -eq 0 && $PASSTHROUGH_ONLY -eq 0 ]]; then
+  MENU_USED=1
+  startup_cursor=1
+  case "$DEFAULT_TIER" in opus) startup_cursor=1;; sonnet) startup_cursor=2;; haiku) startup_cursor=3;; esac
+  while true; do
+    if [[ $UI_ENABLED -eq 1 ]]; then
+      menu_navigate 4 "$startup_cursor" render_startup_menu 'oshc'
+      reply="$MENU_RESULT"
+      if [[ "$reply" == back ]]; then
+        clear_screen
+        printf '%sCancelled.%s\n' "$DIM" "$RESET" >&2
+        exit 0
+      fi
+      startup_cursor="$reply"
+    else
+      render_startup_menu 0
+      printf 'Choice [Enter = %s]: ' "$(tier_label "$DEFAULT_TIER")" >&2
+      reply="$(read_reply)"
+    fi
+    case "$reply" in
+      "") START_TIER="$DEFAULT_TIER"; break ;;
+      1|o|O|opus|Opus) START_TIER="opus"; DEFAULT_TIER="opus"; save_config; break ;;
+      2|s|S|sonnet|Sonnet) START_TIER="sonnet"; DEFAULT_TIER="sonnet"; save_config; break ;;
+      3|h|H|haiku|Haiku) START_TIER="haiku"; DEFAULT_TIER="haiku"; save_config; break ;;
+      4|c|C|config|configure) configure_menu ;;
+      q|Q|quit|exit)
+        clear_screen
+        printf '%sCancelled.%s\n' "$DIM" "$RESET" >&2
+        exit 0
+        ;;
+      *) show_message error "Unknown choice" "Choose 1–4, Q, or press Enter." ;;
+    esac
+  done
+fi
+
+# ---- Isolated Claude Code environment --------------------------------------
+export ANTHROPIC_BASE_URL="$JANUS_BASE_URL"
+export ANTHROPIC_AUTH_TOKEN="$JANUS_API_KEY"
+export ANTHROPIC_API_KEY="" # explicit blank prevents Anthropic/OAuth fallback
+unset OPENROUTER_API_KEY 2>/dev/null || true
+unset ANTHROPIC_MODEL 2>/dev/null || true # do not fight Claude's tier selector
+
+export ANTHROPIC_DEFAULT_OPUS_MODEL="$OPUS_MODEL"
+export ANTHROPIC_DEFAULT_SONNET_MODEL="$SONNET_MODEL"
+export ANTHROPIC_DEFAULT_HAIKU_MODEL="$HAIKU_MODEL"
+export CLAUDE_CODE_SUBAGENT_MODEL="$SONNET_MODEL"
+
+CLAUDE_BIN="$(command -v claude 2>/dev/null || true)"
+[[ -z "$CLAUDE_BIN" || "$CLAUDE_BIN" == *"claude-janus" ]] && CLAUDE_BIN="$HOME/.local/bin/claude"
+[[ -x "$CLAUDE_BIN" ]] || { printf 'claude-janus: Claude Code binary not found\n' >&2; exit 127; }
+
+command=("$CLAUDE_BIN")
+if [[ $HAS_MODEL_ARG -eq 0 && $PASSTHROUGH_ONLY -eq 0 ]]; then
+  command+=(--model "$START_TIER")
+fi
+command+=("$@")
+
+SELECTED_MODEL="$(model_for_tier "$START_TIER")"
+
+# Remove wrapper screens before Claude Code draws its own TUI. Automation and
+# dry-run invocations never clear the caller's terminal.
+if [[ $MENU_USED -eq 1 && $UI_ENABLED -eq 1 ]]; then
+  clear_screen
+fi
+if [[ $BYPASS_ROUTER_CONFIG -eq 0 ]]; then
+  printf '%s→ Janus%s  %s%s tier%s → %s\n' \
+    "$CYAN" "$RESET" "$BOLD" "$(tier_label "$START_TIER")" "$RESET" \
+    "$(model_label "$SELECTED_MODEL")" >&2
+fi
+
+# Authenticated reachability check; failure warns but never prevents launch.
+if [[ $BYPASS_ROUTER_CONFIG -eq 0 && -z "${CLAUDE_JANUS_SKIP_CHECK:-}" ]] && command -v curl >/dev/null 2>&1; then
+  if ! curl -fsS -o /dev/null --max-time 3 \
+    -H "Authorization: Bearer $JANUS_API_KEY" \
+    "$JANUS_BASE_URL/v1/models"; then
+    printf '\033[33m! Could not reach authenticated Janus /v1/models (is Tailscale up?). Launching anyway.\033[0m\n' >&2
+  fi
+fi
+
+if [[ -n "${CLAUDE_JANUS_DRYRUN:-}" ]]; then
+  printf '[dry-run] would exec:'
+  printf ' %q' "${command[@]}"
+  printf '\n'
+  printf '[dry-run] ANTHROPIC_BASE_URL=%s\n' "$ANTHROPIC_BASE_URL"
+  printf '[dry-run] ANTHROPIC_DEFAULT_OPUS_MODEL=%s\n' "$ANTHROPIC_DEFAULT_OPUS_MODEL"
+  printf '[dry-run] ANTHROPIC_DEFAULT_SONNET_MODEL=%s\n' "$ANTHROPIC_DEFAULT_SONNET_MODEL"
+  printf '[dry-run] ANTHROPIC_DEFAULT_HAIKU_MODEL=%s\n' "$ANTHROPIC_DEFAULT_HAIKU_MODEL"
+  printf '[dry-run] CLAUDE_CODE_SUBAGENT_MODEL=%s\n' "$CLAUDE_CODE_SUBAGENT_MODEL"
+  printf '[dry-run] ANTHROPIC_MODEL=%s\n' "${ANTHROPIC_MODEL-<unset>}"
+  printf '[dry-run] ANTHROPIC_AUTH_TOKEN=<set> ANTHROPIC_API_KEY=%q\n' "$ANTHROPIC_API_KEY"
+  exit 0
+fi
+
+exec "${command[@]}"
