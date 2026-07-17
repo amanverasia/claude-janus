@@ -86,8 +86,8 @@ HOME="$TMP/install-home" XDG_CONFIG_HOME="$TMP/install-config" \
   || fail "config permissions"
 pass "installer and config permissions"
 
-help_out="$(HOME="$TMP/help-home" XDG_CONFIG_HOME="$TMP/help-config" "$WRAPPER" --help 2>&1)"
-[[ "$help_out" == *"Usage: claude"* && "$help_out" != *"→ Janus"* && "$help_out" != *"router configuration"* ]] \
+help_out="$(PATH="$TMP/fake-bin:/usr/bin:/bin" HOME="$TMP/help-home" XDG_CONFIG_HOME="$TMP/help-config" "$WRAPPER" --help 2>&1)"
+[[ "$help_out" == *"ARGS: <--help>"* && "$help_out" != *"→ Janus"* && "$help_out" != *"router configuration"* ]] \
   || fail "help passthrough"
 pass "help passthrough without router config"
 
