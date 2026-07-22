@@ -169,6 +169,7 @@ chmod 700 "$STATE_DIR" 2>/dev/null || true
 OPUS_MODEL="$CLAUDE_OPUS"
 SONNET_MODEL="$DEEPSEEK_PRO"
 HAIKU_MODEL="$GLM_47"
+SUBAGENT_MODEL=""
 DEFAULT_TIER="sonnet"
 
 valid_tier() {
@@ -184,10 +185,11 @@ load_config() {
   local key value
   while IFS='=' read -r key value || [[ -n "${key:-}" ]]; do
     case "$key" in
-      OPUS_MODEL)    valid_model_value "$value" && OPUS_MODEL="$value" ;;
-      SONNET_MODEL)  valid_model_value "$value" && SONNET_MODEL="$value" ;;
-      HAIKU_MODEL)   valid_model_value "$value" && HAIKU_MODEL="$value" ;;
-      DEFAULT_TIER)  valid_tier "$value" && DEFAULT_TIER="$value" ;;
+      OPUS_MODEL)     valid_model_value "$value" && OPUS_MODEL="$value" ;;
+      SONNET_MODEL)   valid_model_value "$value" && SONNET_MODEL="$value" ;;
+      HAIKU_MODEL)    valid_model_value "$value" && HAIKU_MODEL="$value" ;;
+      SUBAGENT_MODEL) valid_model_value "$value" && SUBAGENT_MODEL="$value" ;;
+      DEFAULT_TIER)   valid_tier "$value" && DEFAULT_TIER="$value" ;;
     esac
   done < "$CONFIG_FILE"
 }
@@ -197,12 +199,14 @@ save_config() {
     printf 'OPUS_MODEL=%s\n' "$OPUS_MODEL"
     printf 'SONNET_MODEL=%s\n' "$SONNET_MODEL"
     printf 'HAIKU_MODEL=%s\n' "$HAIKU_MODEL"
+    printf 'SUBAGENT_MODEL=%s\n' "$SUBAGENT_MODEL"
     printf 'DEFAULT_TIER=%s\n' "$DEFAULT_TIER"
   } > "$CONFIG_FILE"
   chmod 600 "$CONFIG_FILE" 2>/dev/null || true
 }
 
 load_config
+[[ -n "$SUBAGENT_MODEL" ]] || SUBAGENT_MODEL="$SONNET_MODEL"
 [[ -f "$CONFIG_FILE" ]] || save_config
 
 # ---- Terminal UI ------------------------------------------------------------
@@ -810,7 +814,7 @@ unset ANTHROPIC_MODEL 2>/dev/null || true # do not fight Claude's tier selector
 export ANTHROPIC_DEFAULT_OPUS_MODEL="$OPUS_MODEL"
 export ANTHROPIC_DEFAULT_SONNET_MODEL="$SONNET_MODEL"
 export ANTHROPIC_DEFAULT_HAIKU_MODEL="$HAIKU_MODEL"
-export CLAUDE_CODE_SUBAGENT_MODEL="$SONNET_MODEL"
+export CLAUDE_CODE_SUBAGENT_MODEL="$SUBAGENT_MODEL"
 
 CLAUDE_BIN="$(command -v claude 2>/dev/null || true)"
 [[ -z "$CLAUDE_BIN" || "$CLAUDE_BIN" == *"claude-janus" ]] && CLAUDE_BIN="$HOME/.local/bin/claude"

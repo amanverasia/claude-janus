@@ -36,10 +36,11 @@ mkdir -p "$TMP/fake-bin"
 cat > "$TMP/fake-bin/claude" <<'SH'
 #!/usr/bin/env bash
 printf 'ARGS:'; printf ' <%s>' "$@"; printf '\n'
-printf 'BASE=%s\nTOKEN=%s\nOPUS=%s\nSONNET=%s\nHAIKU=%s\nMODEL=%s\n' \
+printf 'BASE=%s\nTOKEN=%s\nOPUS=%s\nSONNET=%s\nHAIKU=%s\nSUBAGENT=%s\nMODEL=%s\n' \
   "$ANTHROPIC_BASE_URL" "$ANTHROPIC_AUTH_TOKEN" \
   "$ANTHROPIC_DEFAULT_OPUS_MODEL" "$ANTHROPIC_DEFAULT_SONNET_MODEL" \
-  "$ANTHROPIC_DEFAULT_HAIKU_MODEL" "${ANTHROPIC_MODEL-<unset>}"
+  "$ANTHROPIC_DEFAULT_HAIKU_MODEL" "$CLAUDE_CODE_SUBAGENT_MODEL" \
+  "${ANTHROPIC_MODEL-<unset>}"
 SH
 chmod +x "$TMP/fake-bin/claude"
 
@@ -65,12 +66,26 @@ grep -q 'JANUS_API_KEY=sk-janus-test' "$TMP/config-firstrun/claude-janus/router.
   || fail "first-run wrote key"
 pass "first-run non-interactive setup hook"
 
+first_mappings="$TMP/config-firstrun/claude-janus/mappings.conf"
+[[ -f "$first_mappings" ]] || fail "first-run wrote mappings.conf"
+grep -Fxq 'SUBAGENT_MODEL=deepseek/deepseek-v4-pro' "$first_mappings" \
+  || fail "first-run wrote Sonnet-compatible subagent mapping"
+pass "first-run mapping schema includes subagent"
+
 mkdir -p "$TMP/config/claude-janus"
 cat > "$TMP/config/claude-janus/router.conf" <<'EOF'
 JANUS_BASE_URL=https://config.example
 JANUS_API_KEY=config-key
 EOF
 chmod 600 "$TMP/config/claude-janus/router.conf"
+cat > "$TMP/config/claude-janus/mappings.conf" <<'EOF'
+OPUS_MODEL=test/opus-route
+SONNET_MODEL=test/sonnet-route
+HAIKU_MODEL=test/haiku-route
+SUBAGENT_MODEL=test/subagent-route
+DEFAULT_TIER=sonnet
+EOF
+chmod 600 "$TMP/config/claude-janus/mappings.conf"
 
 output="$(
   PATH="$TMP/fake-bin:/usr/bin:/bin" \
@@ -86,6 +101,32 @@ output="$(
   || fail "environment precedence"
 [[ "$output" == *"MODEL=<unset>"* ]] || fail "ANTHROPIC_MODEL unset"
 pass "non-interactive mapping and environment precedence"
+[[ "$output" == *"OPUS=test/opus-route"* ]] || fail "Opus mapping export"
+[[ "$output" == *"SONNET=test/sonnet-route"* ]] || fail "Sonnet mapping export"
+[[ "$output" == *"HAIKU=test/haiku-route"* ]] || fail "Haiku mapping export"
+[[ "$output" == *"SUBAGENT=test/subagent-route"* ]] || fail "subagent mapping export"
+[[ "$output" != *"SUBAGENT=test/sonnet-route"* ]] || fail "subagent mapping remains independent"
+pass "all persisted mappings exported independently"
+
+mkdir -p "$TMP/config-legacy/claude-janus"
+cat > "$TMP/config-legacy/claude-janus/mappings.conf" <<'EOF'
+OPUS_MODEL=legacy/opus
+SONNET_MODEL=legacy/custom-sonnet
+HAIKU_MODEL=legacy/haiku
+DEFAULT_TIER=sonnet
+EOF
+legacy="$(
+  PATH="$TMP/fake-bin:/usr/bin:/bin" \
+  XDG_CONFIG_HOME="$TMP/config-legacy" \
+  JANUS_BASE_URL="https://legacy.example" \
+  JANUS_API_KEY="legacy-key" \
+  CLAUDE_JANUS_SKIP_CHECK=1 \
+  CLAUDE_JANUS_TIER=sonnet \
+  "$WRAPPER" -p legacy 2>&1
+)"
+[[ "$legacy" == *"SONNET=legacy/custom-sonnet"* ]] || fail "legacy Sonnet mapping loaded"
+[[ "$legacy" == *"SUBAGENT=legacy/custom-sonnet"* ]] || fail "legacy subagent inherits effective Sonnet"
+pass "legacy mappings default subagent to effective Sonnet"
 
 dry="$(
   PATH="$TMP/fake-bin:/usr/bin:/bin" \
