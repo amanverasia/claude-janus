@@ -32,7 +32,7 @@ set -e
   || fail "placeholder config fails safely"
 pass "placeholder config fails safely"
 
-mkdir -p "$TMP/fake-bin" "$TMP/config/claude-janus"
+mkdir -p "$TMP/fake-bin"
 cat > "$TMP/fake-bin/claude" <<'SH'
 #!/usr/bin/env bash
 printf 'ARGS:'; printf ' <%s>' "$@"; printf '\n'
@@ -42,6 +42,30 @@ printf 'BASE=%s\nTOKEN=%s\nOPUS=%s\nSONNET=%s\nHAIKU=%s\nMODEL=%s\n' \
   "$ANTHROPIC_DEFAULT_HAIKU_MODEL" "${ANTHROPIC_MODEL-<unset>}"
 SH
 chmod +x "$TMP/fake-bin/claude"
+
+mkdir -p "$TMP/config-firstrun"
+set +e
+firstrun="$(
+  PATH="$TMP/fake-bin:/usr/bin:/bin" \
+  XDG_CONFIG_HOME="$TMP/config-firstrun" \
+  CLAUDE_JANUS_SETUP_BASE_URL='http://127.0.0.1:20128/v1' \
+  CLAUDE_JANUS_SETUP_API_KEY='sk-janus-test' \
+  CLAUDE_JANUS_SKIP_CHECK=1 \
+  CLAUDE_JANUS_TIER=sonnet \
+  CLAUDE_JANUS_DRYRUN=1 \
+  "$WRAPPER" 2>&1
+)"
+firstrun_rc=$?
+set -e
+[[ $firstrun_rc -eq 0 ]] || fail "first-run setup dry-run"
+[[ -f "$TMP/config-firstrun/claude-janus/router.conf" ]] || fail "first-run wrote router.conf"
+grep -q 'JANUS_BASE_URL=http://127.0.0.1:20128' "$TMP/config-firstrun/claude-janus/router.conf" \
+  || fail "first-run normalized base URL"
+grep -q 'JANUS_API_KEY=sk-janus-test' "$TMP/config-firstrun/claude-janus/router.conf" \
+  || fail "first-run wrote key"
+pass "first-run non-interactive setup hook"
+
+mkdir -p "$TMP/config/claude-janus"
 cat > "$TMP/config/claude-janus/router.conf" <<'EOF'
 JANUS_BASE_URL=https://config.example
 JANUS_API_KEY=config-key
@@ -90,5 +114,57 @@ help_out="$(PATH="$TMP/fake-bin:/usr/bin:/bin" HOME="$TMP/help-home" XDG_CONFIG_
 [[ "$help_out" == *"ARGS: <--help>"* && "$help_out" != *"→ Janus"* && "$help_out" != *"router configuration"* ]] \
   || fail "help passthrough"
 pass "help passthrough without router config"
+
+mkdir -p "$TMP/config-strict/claude-janus" "$TMP/fake-bin-strict"
+cat > "$TMP/fake-bin-strict/curl" <<'SH'
+#!/usr/bin/env bash
+exit 7
+SH
+chmod +x "$TMP/fake-bin-strict/curl"
+cat > "$TMP/config-strict/claude-janus/router.conf" <<'EOF'
+JANUS_BASE_URL=https://down.example
+JANUS_API_KEY=k
+EOF
+set +e
+strict="$(
+  PATH="$TMP/fake-bin-strict:$TMP/fake-bin:/usr/bin:/bin" \
+  XDG_CONFIG_HOME="$TMP/config-strict" \
+  CLAUDE_JANUS_TIER=sonnet \
+  CLAUDE_JANUS_STRICT_CHECK=1 \
+  CLAUDE_JANUS_DRYRUN=1 \
+  "$WRAPPER" 2>&1
+)"
+strict_rc=$?
+set -e
+[[ $strict_rc -ne 0 && "$strict" == *"/v1/health unreachable"* ]] || fail "strict health check"
+pass "strict health check fails closed"
+
+mkdir -p "$TMP/config-strict-models/claude-janus" "$TMP/fake-bin-strict-models"
+cat > "$TMP/fake-bin-strict-models/curl" <<'SH'
+#!/usr/bin/env bash
+for arg in "$@"; do
+  [[ "$arg" == */v1/health ]] && exit 0
+done
+exit 7
+SH
+chmod +x "$TMP/fake-bin-strict-models/curl"
+cat > "$TMP/config-strict-models/claude-janus/router.conf" <<'EOF'
+JANUS_BASE_URL=https://models-down.example
+JANUS_API_KEY=k
+EOF
+set +e
+strict_models="$(
+  PATH="$TMP/fake-bin-strict-models:$TMP/fake-bin:/usr/bin:/bin" \
+  XDG_CONFIG_HOME="$TMP/config-strict-models" \
+  CLAUDE_JANUS_TIER=sonnet \
+  CLAUDE_JANUS_STRICT_CHECK=1 \
+  CLAUDE_JANUS_DRYRUN=1 \
+  "$WRAPPER" 2>&1
+)"
+strict_models_rc=$?
+set -e
+[[ $strict_models_rc -ne 0 && "$strict_models" == *"/v1/models failed"* ]] \
+  || fail "strict models check"
+pass "strict models check fails closed"
 
 printf 'All smoke tests passed.\n'
