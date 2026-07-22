@@ -96,7 +96,7 @@ claude-janus
 | `1`–`9` | Select by number |
 | `o`, `s`, `h`, `c` | Contextual shortcuts |
 
-Use **Configure mappings** to assign a router model independently to Opus, Sonnet, and Haiku. The menu loads your Janus **live catalog** when reachable: verified presets appear only if Janus advertises them, and additional models from `/v1/models` are listed as "From Janus" options. If the catalog is unavailable, the menu falls back to built-in presets.
+Use **Configure mappings** to assign router models independently to Opus, Sonnet, Haiku, and Claude Code subagents. The menu loads your Janus **live catalog** when reachable: verified presets appear only if Janus advertises them, and additional models from `/v1/models` are listed as "From Janus" options. If the catalog is unavailable, the menu falls back to built-in presets.
 
 Mappings are saved at:
 
@@ -104,7 +104,9 @@ Mappings are saved at:
 ~/.config/claude-janus/mappings.conf
 ```
 
-Inside Claude Code, `/model` switches between the saved tier mappings.
+Existing mapping files without `SUBAGENT_MODEL` continue to work: the subagent route inherits the effective saved Sonnet mapping until a separate subagent mapping is chosen and saved. The subagent route is not a primary startup tier; `CLAUDE_JANUS_TIER` and Claude Code's `/model` selector remain `opus`, `sonnet`, or `haiku`.
+
+Inside Claude Code, `/model` switches between the saved primary tier mappings.
 
 ## Non-interactive usage
 
@@ -162,6 +164,8 @@ ANTHROPIC_DEFAULT_SONNET_MODEL
 ANTHROPIC_DEFAULT_HAIKU_MODEL
 CLAUDE_CODE_SUBAGENT_MODEL
 ```
+
+`CLAUDE_CODE_SUBAGENT_MODEL` comes from the independently saved `SUBAGENT_MODEL` route. It does not change the primary `--model` argument.
 
 It deliberately leaves `ANTHROPIC_MODEL` unset and starts Claude Code with `--model opus`, `--model sonnet`, or `--model haiku`. This avoids fighting Claude Code's internal model selector.
 
