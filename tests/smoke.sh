@@ -136,7 +136,35 @@ strict="$(
 )"
 strict_rc=$?
 set -e
-[[ $strict_rc -ne 0 && "$strict" == *"Could not reach"* ]] || fail "strict health check"
+[[ $strict_rc -ne 0 && "$strict" == *"/v1/health unreachable"* ]] || fail "strict health check"
 pass "strict health check fails closed"
+
+mkdir -p "$TMP/config-strict-models/claude-janus" "$TMP/fake-bin-strict-models"
+cat > "$TMP/fake-bin-strict-models/curl" <<'SH'
+#!/usr/bin/env bash
+for arg in "$@"; do
+  [[ "$arg" == */v1/health ]] && exit 0
+done
+exit 7
+SH
+chmod +x "$TMP/fake-bin-strict-models/curl"
+cat > "$TMP/config-strict-models/claude-janus/router.conf" <<'EOF'
+JANUS_BASE_URL=https://models-down.example
+JANUS_API_KEY=k
+EOF
+set +e
+strict_models="$(
+  PATH="$TMP/fake-bin-strict-models:$TMP/fake-bin:/usr/bin:/bin" \
+  XDG_CONFIG_HOME="$TMP/config-strict-models" \
+  CLAUDE_JANUS_TIER=sonnet \
+  CLAUDE_JANUS_STRICT_CHECK=1 \
+  CLAUDE_JANUS_DRYRUN=1 \
+  "$WRAPPER" 2>&1
+)"
+strict_models_rc=$?
+set -e
+[[ $strict_models_rc -ne 0 && "$strict_models" == *"/v1/models failed"* ]] \
+  || fail "strict models check"
+pass "strict models check fails closed"
 
 printf 'All smoke tests passed.\n'

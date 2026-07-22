@@ -719,8 +719,9 @@ if [[ $BYPASS_ROUTER_CONFIG -eq 0 ]]; then
 fi
 
 if [[ $BYPASS_ROUTER_CONFIG -eq 0 && -z "${CLAUDE_JANUS_SKIP_CHECK:-}" ]] && command -v curl >/dev/null 2>&1; then
-  if ! janus_check_health "$JANUS_BASE_URL" "$JANUS_API_KEY"; then
-    rc=$?
+  rc=0
+  janus_check_health "$JANUS_BASE_URL" "$JANUS_API_KEY" || rc=$?
+  if [[ $rc -ne 0 ]]; then
     case "$rc" in
       1) msg="Janus /v1/health unreachable at $JANUS_BASE_URL" ;;
       2) msg="Authenticated /v1/models failed (check JANUS_API_KEY / allowlist)" ;;
