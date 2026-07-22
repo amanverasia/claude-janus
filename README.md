@@ -74,7 +74,7 @@ For CI or scripted installs, skip the prompts by exporting both setup variables 
 ```bash
 export CLAUDE_JANUS_SETUP_BASE_URL='http://127.0.0.1:20128'
 export CLAUDE_JANUS_SETUP_API_KEY='sk-janus-yourkey'
-claude-janus --help   # or any first invocation
+CLAUDE_JANUS_TIER=sonnet CLAUDE_JANUS_DRYRUN=1 CLAUDE_JANUS_SKIP_CHECK=1 claude-janus
 ```
 
 This writes `router.conf` non-interactively. Environment variables (`JANUS_BASE_URL`, `JANUS_API_KEY`) still override the file on every run.

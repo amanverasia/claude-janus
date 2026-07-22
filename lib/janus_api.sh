@@ -33,14 +33,16 @@ janus_fetch_catalog() {
 }
 
 janus_check_health() {
-  local base="$1" key="$2"
+  local base="$1" key="$2" body
   base="$(janus_normalize_base_url "$base")"
   curl -fsS -o /dev/null --max-time 3 \
     -A 'claude-janus/1.0' \
     "$base/v1/health" || return 1
-  curl -fsS -o /dev/null --max-time 8 \
+  body="$(curl -fsS --max-time 8 \
     -A 'claude-janus/1.0' \
     -H "Authorization: Bearer $key" \
-    "$base/v1/models" || return 2
+    -H 'Accept: application/json' \
+    "$base/v1/models")" || return 2
+  [[ -n "$(janus_extract_model_ids "$body")" ]] || return 2
   return 0
 }

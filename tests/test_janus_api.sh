@@ -29,4 +29,32 @@ json="$(cat "$ROOT/tests/fixtures/models_openai.json")"
 janus_catalog_contains "$json" 'deepseek/deepseek-v4-pro' || fail "preset in fixture"
 pass "preset intersection helper"
 
+ids="$(janus_extract_model_ids "$(cat "$ROOT/tests/fixtures/models_empty.json")")"
+[[ -z "$ids" ]] || fail "empty catalog extract"
+pass "empty catalog extract"
+
+TMP="$(mktemp -d)"
+trap 'rm -rf "$TMP"' EXIT
+mkdir -p "$TMP/fake-bin"
+cat > "$TMP/fake-bin/curl" <<'SH'
+#!/usr/bin/env bash
+for arg in "$@"; do
+  [[ "$arg" == */v1/health ]] && exit 0
+  [[ "$arg" == */v1/models ]] && {
+    cat <<'JSON'
+{"object":"list","data":[]}
+JSON
+    exit 0
+  }
+done
+exit 7
+SH
+chmod +x "$TMP/fake-bin/curl"
+set +e
+PATH="$TMP/fake-bin:/usr/bin:/bin" janus_check_health 'http://empty.example' 'k'
+empty_rc=$?
+set -e
+[[ $empty_rc -eq 2 ]] || fail "empty models health check"
+pass "empty models health check"
+
 printf 'All janus_api unit tests passed.\n'
