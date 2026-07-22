@@ -144,6 +144,19 @@ CLAUDE_HAIKU="openrouter/anthropic/claude-haiku-4.5"
 DEEPSEEK_PRO="deepseek/deepseek-v4-pro"
 DEEPSEEK_FLASH="deepseek/deepseek-v4-flash"
 GLM_47="zhipu/glm-4.7"
+PRESET_IDS=("$CLAUDE_OPUS" "$CLAUDE_SONNET" "$CLAUDE_HAIKU" "$DEEPSEEK_PRO" "$DEEPSEEK_FLASH" "$GLM_47")
+PRESET_LABELS=('Claude Opus 4.8' 'Claude Sonnet 5' 'Claude Haiku 4.5' 'DeepSeek V4 Pro' 'DeepSeek V4 Flash' 'GLM 4.7')
+PRESET_NOTES=(
+  'OpenRouter-backed; full Claude Code turn verified'
+  'OpenRouter-backed; chat and tool loop verified'
+  'Adaptive-thinking main turns still fail upstream'
+  'Chat and tool loop verified'
+  'Fast route; interactive Claude Code verified'
+  'Claude Code main turn verified'
+)
+PRESET_SHORTCUTS=('o' 's' 'h' 'p' 'f' 'g')
+CATALOG_JSON=""
+CATALOG_STATUS=0
 
 # ---- Saved tier mappings ----------------------------------------------------
 STATE_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/claude-janus"
@@ -434,16 +447,29 @@ print_model_option() {
   [[ -z "$note" ]] || printf '         %s%s%s\n' "$YELLOW" "$note" "$RESET" >&2
 }
 
+load_catalog() {
+  if [[ -n "$CATALOG_JSON" || $CATALOG_STATUS -ne 0 ]]; then
+    [[ -n "$CATALOG_JSON" ]]
+    return $?
+  fi
+  if CATALOG_JSON="$(janus_fetch_catalog "$JANUS_BASE_URL" "$JANUS_API_KEY" 2>/dev/null)"; then
+    if [[ -z "$(janus_extract_model_ids "$CATALOG_JSON")" ]]; then
+      CATALOG_STATUS=1
+      CATALOG_JSON=""
+      return 1
+    fi
+    return 0
+  fi
+  CATALOG_STATUS=1
+  CATALOG_JSON=""
+  return 1
+}
+
 # Return 0 if exact model exists, 1 if catalog is reachable but it does not,
 # and 2 if the authenticated catalog cannot be checked.
 model_exists() {
-  local catalog
-  command -v curl >/dev/null 2>&1 || return 2
-  command -v jq >/dev/null 2>&1 || return 2
-  catalog="$(curl -fsS --max-time 8 \
-    -H "Authorization: Bearer $JANUS_API_KEY" \
-    "$JANUS_BASE_URL/v1/models" 2>/dev/null)" || return 2
-  jq -e --arg id "$1" 'any(.data[]; .id == $id)' >/dev/null 2>&1 <<< "$catalog"
+  load_catalog || return 2
+  janus_catalog_contains "$CATALOG_JSON" "$1"
 }
 
 pick_custom_model() {
@@ -473,39 +499,126 @@ pick_custom_model() {
   fi
 }
 
+TIER_MENU_IDS=()
+TIER_MENU_LABELS=()
+TIER_MENU_NOTES=()
+TIER_MENU_SHORTCUTS=""
+TIER_MENU_CUSTOM_INDEX=0
+TIER_MENU_COUNT=0
+
+tier_menu_has_preset() {
+  local id="$1" preset
+  for preset in "${PRESET_IDS[@]}"; do
+    [[ "$id" != "$preset" ]] || return 0
+  done
+  return 1
+}
+
+tier_menu_add_model() {
+  local id="$1" label="$2" note="${3:-}" shortcut="${4:-$'\001'}"
+  TIER_MENU_IDS+=("$id")
+  TIER_MENU_LABELS+=("$label")
+  TIER_MENU_NOTES+=("$note")
+  TIER_MENU_SHORTCUTS+="$shortcut"
+}
+
+build_tier_model_menu() {
+  local i id extras=0
+  TIER_MENU_IDS=()
+  TIER_MENU_LABELS=()
+  TIER_MENU_NOTES=()
+  TIER_MENU_SHORTCUTS=""
+  if load_catalog; then
+    for i in "${!PRESET_IDS[@]}"; do
+      if janus_catalog_contains "$CATALOG_JSON" "${PRESET_IDS[$i]}"; then
+        tier_menu_add_model "${PRESET_IDS[$i]}" "${PRESET_LABELS[$i]}" "${PRESET_NOTES[$i]}" "${PRESET_SHORTCUTS[$i]}"
+      fi
+    done
+    while IFS= read -r id && (( extras < 20 )); do
+      [[ -n "$id" ]] || continue
+      tier_menu_has_preset "$id" && continue
+      tier_menu_add_model "$id" "From Janus: $(model_label "$id")"
+      (( extras += 1 ))
+    done < <(janus_extract_model_ids "$CATALOG_JSON")
+  else
+    for i in "${!PRESET_IDS[@]}"; do
+      tier_menu_add_model "${PRESET_IDS[$i]}" "${PRESET_LABELS[$i]}" "${PRESET_NOTES[$i]}" "${PRESET_SHORTCUTS[$i]}"
+    done
+  fi
+  TIER_MENU_CUSTOM_INDEX="$((${#TIER_MENU_IDS[@]} + 1))"
+  TIER_MENU_COUNT="$TIER_MENU_CUSTOM_INDEX"
+  TIER_MENU_SHORTCUTS+="c"
+}
+
+tier_menu_cursor_for_model() {
+  local model="$1" i
+  for i in "${!TIER_MENU_IDS[@]}"; do
+    if [[ "$model" == "${TIER_MENU_IDS[$i]}" ]]; then
+      printf '%s' "$((i + 1))"
+      return 0
+    fi
+  done
+  printf '%s' "$TIER_MENU_CUSTOM_INDEX"
+}
+
+TIER_MENU_SELECTED=""
+tier_menu_select_reply() {
+  local reply="$1" index
+  TIER_MENU_SELECTED=""
+  if [[ "$reply" =~ ^[0-9]+$ ]]; then
+    index=$((10#$reply))
+    if (( index >= 1 && index <= TIER_MENU_COUNT )); then
+      (( index == TIER_MENU_CUSTOM_INDEX )) && return 1
+      TIER_MENU_SELECTED="${TIER_MENU_IDS[$((index - 1))]}"
+      return 0
+    fi
+    return 2
+  fi
+  case "$reply" in
+    o|O|opus|Opus) TIER_MENU_SELECTED="$CLAUDE_OPUS" ;;
+    s|S|sonnet|Sonnet) TIER_MENU_SELECTED="$CLAUDE_SONNET" ;;
+    h|H|haiku|Haiku) TIER_MENU_SELECTED="$CLAUDE_HAIKU" ;;
+    p|P|pro|Pro) TIER_MENU_SELECTED="$DEEPSEEK_PRO" ;;
+    f|F|flash|Flash) TIER_MENU_SELECTED="$DEEPSEEK_FLASH" ;;
+    g|G|glm|GLM) TIER_MENU_SELECTED="$GLM_47" ;;
+    c|C|custom|Custom) return 1 ;;
+    *) return 2 ;;
+  esac
+  tier_menu_has_model "$TIER_MENU_SELECTED" || return 2
+}
+
+tier_menu_has_model() {
+  local id="$1" model
+  for model in "${TIER_MENU_IDS[@]}"; do
+    [[ "$id" != "$model" ]] || return 0
+  done
+  return 1
+}
+
 render_tier_model_menu() {
-  local cursor="$1" tier="$2" current="$3"
+  local cursor="$1" tier="$2" current="$3" i number
   screen_header "Map the $(tier_label "$tier") tier" "Current: $(model_label "$current") · $current"
-  print_model_option "$cursor" 1 'Claude Opus 4.8' "$CLAUDE_OPUS" 'OpenRouter-backed; full Claude Code turn verified'
-  print_model_option "$cursor" 2 'Claude Sonnet 5' "$CLAUDE_SONNET" 'OpenRouter-backed; chat and tool loop verified'
-  print_model_option "$cursor" 3 'Claude Haiku 4.5' "$CLAUDE_HAIKU" 'Adaptive-thinking main turns still fail upstream'
-  print_model_option "$cursor" 4 'DeepSeek V4 Pro' "$DEEPSEEK_PRO" 'Chat and tool loop verified'
-  print_model_option "$cursor" 5 'DeepSeek V4 Flash' "$DEEPSEEK_FLASH" 'Fast route; interactive Claude Code verified'
-  print_model_option "$cursor" 6 'GLM 4.7' "$GLM_47" 'Claude Code main turn verified'
-  menu_choice "$cursor" 7 7 'Enter another exact Janus model ID'
-  printf '\n  %s↑/↓ move · Enter select · Esc back · 1–7 shortcut%s\n' "$DIM" "$RESET" >&2
+  for i in "${!TIER_MENU_IDS[@]}"; do
+    number="$((i + 1))"
+    print_model_option "$cursor" "$number" "${TIER_MENU_LABELS[$i]}" "${TIER_MENU_IDS[$i]}" "${TIER_MENU_NOTES[$i]}"
+  done
+  menu_choice "$cursor" "$TIER_MENU_CUSTOM_INDEX" "$TIER_MENU_CUSTOM_INDEX" 'Enter another exact Janus model ID'
+  printf '\n  %s↑/↓ move · Enter select · Esc back%s\n' "$DIM" "$RESET" >&2
 }
 
 configure_tier() {
-  local tier="$1" target_var current reply selected="" cursor=1
+  local tier="$1" target_var current reply selected="" cursor=1 select_rc
   case "$tier" in
     opus) target_var="OPUS_MODEL"; current="$OPUS_MODEL" ;;
     sonnet) target_var="SONNET_MODEL"; current="$SONNET_MODEL" ;;
     haiku) target_var="HAIKU_MODEL"; current="$HAIKU_MODEL" ;;
   esac
-  case "$current" in
-    "$CLAUDE_OPUS") cursor=1 ;;
-    "$CLAUDE_SONNET") cursor=2 ;;
-    "$CLAUDE_HAIKU") cursor=3 ;;
-    "$DEEPSEEK_PRO") cursor=4 ;;
-    "$DEEPSEEK_FLASH") cursor=5 ;;
-    "$GLM_47") cursor=6 ;;
-    *) cursor=7 ;;
-  esac
+  build_tier_model_menu
+  cursor="$(tier_menu_cursor_for_model "$current")"
 
   while true; do
     if [[ $UI_ENABLED -eq 1 ]]; then
-      menu_navigate 7 "$cursor" render_tier_model_menu 'oshpfgc' "$tier" "$current"
+      menu_navigate "$TIER_MENU_COUNT" "$cursor" render_tier_model_menu "$TIER_MENU_SHORTCUTS" "$tier" "$current"
       reply="$MENU_RESULT"
       [[ "$reply" != back ]] || return 0
       cursor="$reply"
@@ -517,22 +630,26 @@ configure_tier() {
 
     case "$reply" in
       ""|b|B) return 0 ;;
-      1|o|O|opus|Opus) selected="$CLAUDE_OPUS" ;;
-      2|s|S|sonnet|Sonnet) selected="$CLAUDE_SONNET" ;;
-      3|h|H|haiku|Haiku) selected="$CLAUDE_HAIKU" ;;
-      4|p|P|pro|Pro) selected="$DEEPSEEK_PRO" ;;
-      5|f|F|flash|Flash) selected="$DEEPSEEK_FLASH" ;;
-      6|g|G|glm|GLM) selected="$GLM_47" ;;
-      7|c|C|custom|Custom)
-        if pick_custom_model "$target_var" "$current"; then
-          save_config
-          show_message success "Mapping saved" "$(tier_label "$tier") now uses $(model_label "${!target_var}")."
-        fi
-        return 0
-        ;;
       *)
-        show_message error "Unknown choice" "Choose 1–7, B, or press Enter."
-        continue
+        if tier_menu_select_reply "$reply"; then
+          select_rc=0
+        else
+          select_rc=$?
+        fi
+        case "$select_rc" in
+          0) selected="$TIER_MENU_SELECTED" ;;
+          1)
+            if pick_custom_model "$target_var" "$current"; then
+              save_config
+              show_message success "Mapping saved" "$(tier_label "$tier") now uses $(model_label "${!target_var}")."
+            fi
+            return 0
+            ;;
+          *)
+            show_message error "Unknown choice" "Choose a shown number, B, or press Enter."
+            continue
+            ;;
+        esac
         ;;
     esac
 

@@ -25,4 +25,8 @@ janus_catalog_contains "$(cat "$ROOT/tests/fixtures/models_openai.json")" 'combo
   || fail "missing should fail"
 pass "catalog contains"
 
+json="$(cat "$ROOT/tests/fixtures/models_openai.json")"
+janus_catalog_contains "$json" 'deepseek/deepseek-v4-pro' || fail "preset in fixture"
+pass "preset intersection helper"
+
 printf 'All janus_api unit tests passed.\n'
