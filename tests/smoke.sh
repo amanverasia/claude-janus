@@ -144,6 +144,27 @@ legacy="$(
 [[ "$legacy" == *"SUBAGENT=legacy/custom-sonnet"* ]] || fail "legacy subagent inherits effective Sonnet"
 pass "legacy mappings default subagent to effective Sonnet"
 
+mkdir -p "$TMP/config-invalid-subagent/claude-janus"
+cat > "$TMP/config-invalid-subagent/claude-janus/mappings.conf" <<'EOF'
+OPUS_MODEL=invalid-subagent/opus
+SONNET_MODEL=customized/sonnet-route
+HAIKU_MODEL=invalid-subagent/haiku
+SUBAGENT_MODEL=
+DEFAULT_TIER=sonnet
+EOF
+invalid_subagent="$(
+  PATH="$TMP/fake-bin:/usr/bin:/bin" \
+  XDG_CONFIG_HOME="$TMP/config-invalid-subagent" \
+  JANUS_BASE_URL="https://invalid-subagent.example" \
+  JANUS_API_KEY="invalid-subagent-key" \
+  CLAUDE_JANUS_SKIP_CHECK=1 \
+  CLAUDE_JANUS_TIER=sonnet \
+  "$WRAPPER" -p invalid-subagent 2>&1
+)"
+[[ "$invalid_subagent" == *"SUBAGENT=customized/sonnet-route"* ]] \
+  || fail "invalid persisted subagent falls back to effective Sonnet"
+pass "invalid persisted subagent mapping falls back to effective Sonnet"
+
 dry="$(
   PATH="$TMP/fake-bin:/usr/bin:/bin" \
   XDG_CONFIG_HOME="$TMP/config" \

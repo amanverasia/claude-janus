@@ -39,6 +39,9 @@ bash tests/smoke.sh
 
 # Pseudo-terminal regression test for arrow-key menu navigation
 python3 tests/arrow_keys.py
+
+# Interactive persistence regression for independent subagent model mapping
+python3 tests/subagent_mapping.py
 ```
 
 Run Bash syntax checks. There is no separately configured lint framework:
@@ -150,6 +153,7 @@ These distinctions drive launcher diagnostics and smoke-test expectations.
 - `tests/test_janus_api.sh` is the focused unit-test entry point for `lib/janus_api.sh`. Catalog fixtures cover OpenAI-style and Anthropic-style responses because both expose IDs under `.data[]`.
 - `tests/smoke.sh` checks syntax, absent and placeholder configuration failure, first-run non-interactive setup, config/environment precedence, dry-run secret redaction, installation permissions, `--help` passthrough, and strict health-check failures.
 - `tests/arrow_keys.py` uses a pseudo-TTY and fake `claude` executable to verify that arrow navigation selects the intended tier, renders a highlight, does not leak escape sequences, and exits successfully.
+- `tests/subagent_mapping.py` is the focused interactive persistence regression for independent subagent model mapping; it uses a pseudo-TTY and fake `claude` executable to verify selection, persistence, and launch-time export independently from the primary Sonnet route.
 - CI runs `./tests/run.sh` on pushes and pull requests. Keep the complete suite self-contained and independent of a live Janus instance.
 
 ## Behavior to preserve
