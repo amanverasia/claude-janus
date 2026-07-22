@@ -287,7 +287,7 @@ read_menu_key() {
 # in MENU_RESULT; Esc/Q/B return "back". Number shortcuts remain available.
 menu_navigate() {
   local count="$1" cursor="$2" renderer="$3" shortcuts="$4"
-  local i pressed
+  local i pressed MENU_REDRAW_IN_PLACE=0
   shift 4
   MENU_RESULT=""
   menu_tty_raw
@@ -295,10 +295,10 @@ menu_navigate() {
     "$renderer" "$cursor" "$@"
     read_menu_key
     case "$MENU_KEY" in
-      up)   (( cursor = cursor <= 1 ? count : cursor - 1 )) ;;
-      down) (( cursor = cursor >= count ? 1 : cursor + 1 )) ;;
-      home) cursor=1 ;;
-      end)  cursor="$count" ;;
+      up)   (( cursor = cursor <= 1 ? count : cursor - 1 )); MENU_REDRAW_IN_PLACE=1 ;;
+      down) (( cursor = cursor >= count ? 1 : cursor + 1 )); MENU_REDRAW_IN_PLACE=1 ;;
+      home) cursor=1; MENU_REDRAW_IN_PLACE=1 ;;
+      end)  cursor="$count"; MENU_REDRAW_IN_PLACE=1 ;;
       left|right) ;; # safely consume; never print escape sequences
       enter)
         MENU_RESULT="$cursor"
@@ -338,9 +338,19 @@ clear_screen() {
   printf '\033[2J\033[H' >&2
 }
 
+prepare_screen() {
+  [[ $UI_ENABLED -eq 1 ]] || return 0
+  if [[ ${MENU_REDRAW_IN_PLACE:-0} -eq 1 ]]; then
+    # Keep the previous frame visible while repainting navigation changes.
+    printf '\033[H' >&2
+  else
+    clear_screen
+  fi
+}
+
 screen_header() {
   local title="$1" subtitle="${2:-}"
-  clear_screen
+  prepare_screen
   printf '%s╭─ CLAUDE CODE · OFFICIAL JANUS COMPANION ─────────────────────────%s\n' "$CYAN" "$RESET" >&2
   printf '│ %s%s%s\n' "$BOLD" "$title" "$RESET" >&2
   [[ -z "$subtitle" ]] || printf '│ %s%s%s\n' "$DIM" "$subtitle" "$RESET" >&2

@@ -49,9 +49,31 @@ def wait_for(needle: bytes, timeout: float = 8) -> None:
             buffer.extend(data)
     raise RuntimeError(f"did not see {needle!r}")
 
+def read_available(timeout: float = 0.2) -> bytes:
+    captured = bytearray()
+    end = time.time() + timeout
+    while time.time() < end:
+        ready, _, _ = select.select([fd], [], [], 0.02)
+        if not ready:
+            continue
+        try:
+            data = os.read(fd, 65536)
+        except OSError:
+            break
+        if not data:
+            break
+        buffer.extend(data)
+        captured.extend(data)
+    return bytes(captured)
+
+
 wait_for(b"Esc/Q cancel")
-# Default is Sonnet. Down selects Haiku; left/right are ignored; Enter launches.
-for key in (b"\x1b[B", b"\x1b[D", b"\x1b[C", b"\r"):
+read_available(0.05)
+# Default is Sonnet. Down selects Haiku and redraws in place without blanking
+# the entire terminal; left/right are ignored; Enter launches.
+os.write(fd, b"\x1b[B")
+redraw = read_available()
+for key in (b"\x1b[D", b"\x1b[C", b"\r"):
     os.write(fd, key)
     time.sleep(0.12)
 
@@ -85,6 +107,8 @@ text = re.sub(rb"\x1b\[[0-9;?]*[ -/]*[@-~]", b"", raw).decode("utf-8", "replace"
 checks = {
     "Haiku launch": "ARGS: <--model> <haiku>" in text,
     "highlight": "❯" in text,
+    "redraw keeps screen content": b"\x1b[2J" not in redraw,
+    "redraw returns cursor home": redraw.startswith(b"\x1b[H"),
     "no escaped arrows": all(token not in text for token in ("^[[A", "^[[B", "^[[C", "^[[D")),
     "success": os.waitstatus_to_exitcode(status) == 0,
 }
