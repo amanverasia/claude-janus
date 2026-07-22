@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# claude-janus — launch Claude Code through the Janus Anthropic-compatible API.
+# claude-janus — official Claude Code companion for Janus.
 #
-# This wrapper keeps independent Janus model mappings for Claude Code's Opus,
-# Sonnet, and Haiku tiers. At startup, choose the tier to launch; inside Claude
-# Code, /model can switch between those same saved mappings.
+# Launches Claude Code through Janus's Anthropic-compatible API with independent
+# Opus, Sonnet, and Haiku tier mappings. At startup, choose the tier to launch;
+# inside Claude Code, /model can switch between those same saved mappings.
 #
 # The wrapper is isolated: ~/.zshrc and the ordinary `claude` command remain
 # untouched. Janus variables apply only to the launched Claude Code process.
@@ -337,7 +337,7 @@ clear_screen() {
 screen_header() {
   local title="$1" subtitle="${2:-}"
   clear_screen
-  printf '%s╭─ CLAUDE CODE · JANUS ROUTER ─────────────────────────────────────%s\n' "$CYAN" "$RESET" >&2
+  printf '%s╭─ CLAUDE CODE · OFFICIAL JANUS COMPANION ─────────────────────────%s\n' "$CYAN" "$RESET" >&2
   printf '│ %s%s%s\n' "$BOLD" "$title" "$RESET" >&2
   [[ -z "$subtitle" ]] || printf '│ %s%s%s\n' "$DIM" "$subtitle" "$RESET" >&2
   printf '%s╰───────────────────────────────────────────────────────────────────%s\n\n' "$CYAN" "$RESET" >&2

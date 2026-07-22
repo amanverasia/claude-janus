@@ -1,12 +1,16 @@
 # claude-janus
 
-An interactive launcher for running [Claude Code](https://docs.anthropic.com/en/docs/claude-code) through a Janus router that exposes the Anthropic Messages API.
+**Official [Claude Code](https://docs.anthropic.com/en/docs/claude-code) companion for [Janus](https://github.com/amanverasia/Janus)** — the multi-provider AI gateway.
 
-`claude-janus` keeps separate router model mappings for Claude Code's **Opus**, **Sonnet**, and **Haiku** tiers. It provides a keyboard-driven terminal UI and launches Claude Code through its built-in tier aliases, so `/model` continues to work inside Claude Code.
+`claude-janus` launches Claude Code through your Janus router's Anthropic-compatible Messages API. It keeps separate model mappings for Claude Code's **Opus**, **Sonnet**, and **Haiku** tiers, provides a keyboard-driven terminal UI, and leaves your shell profile untouched.
+
+For Janus server setup and other client options, see the [Janus client-setup guide](https://amanverasia.github.io/Janus/client-setup/).
 
 ## Features
 
 - Independent Opus, Sonnet, and Haiku model mappings
+- **Live catalog** — tier menus query authenticated `GET /v1/models` and show models your Janus instance actually exposes
+- Interactive first-run setup with localhost Janus detection
 - Full-screen terminal menu with arrow-key navigation
 - Number and letter shortcuts
 - Saved default startup tier
@@ -53,9 +57,27 @@ JANUS_BASE_URL=https://your-janus-router.example
 JANUS_API_KEY=replace-with-your-key
 ```
 
-The base URL should normally omit `/v1`; Claude Code appends `/v1/messages`.
+The base URL should normally omit `/v1`; Claude Code appends `/v1/messages`. If your URL already includes `/v1`, `claude-janus` normalizes it.
 
 Make sure `~/.local/bin` is on your `PATH`.
+
+## First-run setup
+
+On the first launch, if `router.conf` is missing or still contains placeholders, `claude-janus` runs interactive setup:
+
+1. Probes `http://127.0.0.1:20128` and `http://localhost:20128` for a local Janus `/v1/health` endpoint
+2. Prompts for a Janus base URL and API key if needed
+3. Writes `router.conf` at mode `600`
+
+For CI or scripted installs, skip the prompts by exporting both setup variables before the first run:
+
+```bash
+export CLAUDE_JANUS_SETUP_BASE_URL='http://127.0.0.1:20128'
+export CLAUDE_JANUS_SETUP_API_KEY='sk-janus-yourkey'
+claude-janus --help   # or any first invocation
+```
+
+This writes `router.conf` non-interactively. Environment variables (`JANUS_BASE_URL`, `JANUS_API_KEY`) still override the file on every run.
 
 ## Usage
 
@@ -74,7 +96,9 @@ claude-janus
 | `1`–`9` | Select by number |
 | `o`, `s`, `h`, `c` | Contextual shortcuts |
 
-Use **Configure mappings** to assign a router model independently to Opus, Sonnet, and Haiku. Mappings are saved at:
+Use **Configure mappings** to assign a router model independently to Opus, Sonnet, and Haiku. The menu loads your Janus **live catalog** when reachable: verified presets appear only if Janus advertises them, and additional models from `/v1/models` are listed as "From Janus" options. If the catalog is unavailable, the menu falls back to built-in presets.
+
+Mappings are saved at:
 
 ```text
 ~/.config/claude-janus/mappings.conf
@@ -110,6 +134,14 @@ Skip the optional startup reachability check:
 ```bash
 CLAUDE_JANUS_SKIP_CHECK=1 claude-janus
 ```
+
+Fail instead of warning when the health check does not pass:
+
+```bash
+CLAUDE_JANUS_STRICT_CHECK=1 claude-janus
+```
+
+By default, a failed `/v1/health` or authenticated `/v1/models` check prints a warning and Claude Code still launches. With `CLAUDE_JANUS_STRICT_CHECK=1`, the launcher exits before starting Claude Code.
 
 Use another configuration path:
 
