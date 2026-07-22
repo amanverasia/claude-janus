@@ -398,12 +398,17 @@ model_badge() {
   esac
 }
 
-tier_label() {
+mapping_label() {
   case "$1" in
     opus) printf 'Opus' ;;
     sonnet) printf 'Sonnet' ;;
     haiku) printf 'Haiku' ;;
+    subagent) printf 'Subagent' ;;
   esac
+}
+
+tier_label() {
+  mapping_label "$1"
 }
 
 model_for_tier() {
@@ -415,19 +420,20 @@ model_for_tier() {
 }
 
 print_mapping_row() {
-  local tier="$1" model="$2" marker=' '
-  [[ "$tier" != "$DEFAULT_TIER" ]] || marker='●'
-  printf '  %s%s %-7s%s  %s%-26s%s  [%s]\n' \
-    "$CYAN" "$marker" "$(tier_label "$tier")" "$RESET" \
+  local role="$1" model="$2" marker=' '
+  [[ "$role" == subagent || "$role" != "$DEFAULT_TIER" ]] || marker='●'
+  printf '  %s%s %-9s%s  %s%-26s%s  [%s]\n' \
+    "$CYAN" "$marker" "$(mapping_label "$role")" "$RESET" \
     "$BOLD" "$(model_label "$model")" "$RESET" "$(model_badge "$model")" >&2
   printf '      %s%s%s\n' "$DIM" "$model" "$RESET" >&2
 }
 
 print_mappings() {
-  printf '%sSAVED TIER MAP%s  %s● default%s\n\n' "$BOLD" "$RESET" "$DIM" "$RESET" >&2
+  printf '%sSAVED MODEL MAP%s  %s● default startup tier%s\n\n' "$BOLD" "$RESET" "$DIM" "$RESET" >&2
   print_mapping_row opus "$OPUS_MODEL"
   print_mapping_row sonnet "$SONNET_MODEL"
   print_mapping_row haiku "$HAIKU_MODEL"
+  print_mapping_row subagent "$SUBAGENT_MODEL"
 }
 
 menu_choice() {
@@ -599,9 +605,9 @@ tier_menu_has_model() {
   return 1
 }
 
-render_tier_model_menu() {
-  local cursor="$1" tier="$2" current="$3" i number
-  screen_header "Map the $(tier_label "$tier") tier" "Current: $(model_label "$current") · $current"
+render_mapping_model_menu() {
+  local cursor="$1" role="$2" current="$3" i number
+  screen_header "Map the $(mapping_label "$role") model" "Current: $(model_label "$current") · $current"
   for i in "${!TIER_MENU_IDS[@]}"; do
     number="$((i + 1))"
     print_model_option "$cursor" "$number" "${TIER_MENU_LABELS[$i]}" "${TIER_MENU_IDS[$i]}" "${TIER_MENU_NOTES[$i]}"
@@ -610,24 +616,25 @@ render_tier_model_menu() {
   printf '\n  %s↑/↓ move · Enter select · Esc back%s\n' "$DIM" "$RESET" >&2
 }
 
-configure_tier() {
-  local tier="$1" target_var current reply selected="" cursor=1 select_rc
-  case "$tier" in
+configure_mapping() {
+  local role="$1" target_var current reply selected="" cursor=1 select_rc
+  case "$role" in
     opus) target_var="OPUS_MODEL"; current="$OPUS_MODEL" ;;
     sonnet) target_var="SONNET_MODEL"; current="$SONNET_MODEL" ;;
     haiku) target_var="HAIKU_MODEL"; current="$HAIKU_MODEL" ;;
+    subagent) target_var="SUBAGENT_MODEL"; current="$SUBAGENT_MODEL" ;;
   esac
   build_tier_model_menu
   cursor="$(tier_menu_cursor_for_model "$current")"
 
   while true; do
     if [[ $UI_ENABLED -eq 1 ]]; then
-      menu_navigate "$TIER_MENU_COUNT" "$cursor" render_tier_model_menu "$TIER_MENU_SHORTCUTS" "$tier" "$current"
+      menu_navigate "$TIER_MENU_COUNT" "$cursor" render_mapping_model_menu "$TIER_MENU_SHORTCUTS" "$role" "$current"
       reply="$MENU_RESULT"
       [[ "$reply" != back ]] || return 0
       cursor="$reply"
     else
-      render_tier_model_menu 0 "$tier" "$current"
+      render_mapping_model_menu 0 "$role" "$current"
       printf 'Choice [Enter keeps current]: ' >&2
       reply="$(read_reply)"
     fi
@@ -645,7 +652,7 @@ configure_tier() {
           1)
             if pick_custom_model "$target_var" "$current"; then
               save_config
-              show_message success "Mapping saved" "$(tier_label "$tier") now uses $(model_label "${!target_var}")."
+              show_message success "Mapping saved" "$(mapping_label "$role") now uses $(model_label "${!target_var}")."
             fi
             return 0
             ;;
@@ -659,7 +666,7 @@ configure_tier() {
 
     printf -v "$target_var" '%s' "$selected"
     save_config
-    show_message success "Mapping saved" "$(tier_label "$tier") now uses $(model_label "$selected")."
+    show_message success "Mapping saved" "$(mapping_label "$role") now uses $(model_label "$selected")."
     return 0
   done
 }
@@ -698,21 +705,22 @@ configure_default_tier() {
 
 render_config_menu() {
   local cursor="$1"
-  screen_header "Configure tier mappings" "Changes are saved to $CONFIG_FILE"
+  screen_header "Configure model mappings" "Changes are saved to $CONFIG_FILE"
   print_mappings
   printf '\n%sEDIT%s\n\n' "$BOLD" "$RESET" >&2
   menu_choice "$cursor" 1 1 'Change Opus mapping'
   menu_choice "$cursor" 2 2 'Change Sonnet mapping'
   menu_choice "$cursor" 3 3 'Change Haiku mapping'
-  menu_choice "$cursor" 4 4 'Change default startup tier'
-  printf '\n  %s↑/↓ move · Enter select · Esc back · 1–4 shortcut%s\n' "$DIM" "$RESET" >&2
+  menu_choice "$cursor" 4 4 'Change subagent mapping'
+  menu_choice "$cursor" 5 5 'Change default startup tier'
+  printf '\n  %s↑/↓ move · Enter select · Esc back · 1–5 shortcut%s\n' "$DIM" "$RESET" >&2
 }
 
 configure_menu() {
   local reply cursor=1
   while true; do
     if [[ $UI_ENABLED -eq 1 ]]; then
-      menu_navigate 4 "$cursor" render_config_menu 'oshd'
+      menu_navigate 5 "$cursor" render_config_menu 'oshad'
       reply="$MENU_RESULT"
       [[ "$reply" != back ]] || return 0
       cursor="$reply"
@@ -722,12 +730,13 @@ configure_menu() {
       reply="$(read_reply)"
     fi
     case "$reply" in
-      1|o|O|opus|Opus) configure_tier opus ;;
-      2|s|S|sonnet|Sonnet) configure_tier sonnet ;;
-      3|h|H|haiku|Haiku) configure_tier haiku ;;
-      4|d|D|default|Default) configure_default_tier ;;
+      1|o|O|opus|Opus) configure_mapping opus ;;
+      2|s|S|sonnet|Sonnet) configure_mapping sonnet ;;
+      3|h|H|haiku|Haiku) configure_mapping haiku ;;
+      4|a|A|agent|Agent|subagent|Subagent) configure_mapping subagent ;;
+      5|d|D|default|Default) configure_default_tier ;;
       ""|b|B) return 0 ;;
-      *) show_message error "Unknown choice" "Choose 1–4 or B." ;;
+      *) show_message error "Unknown choice" "Choose 1–5 or B." ;;
     esac
   done
 }
@@ -793,7 +802,14 @@ elif [[ $HAS_MODEL_ARG -eq 0 && $PASSTHROUGH_ONLY -eq 0 ]]; then
       1|o|O|opus|Opus) START_TIER="opus"; DEFAULT_TIER="opus"; save_config; break ;;
       2|s|S|sonnet|Sonnet) START_TIER="sonnet"; DEFAULT_TIER="sonnet"; save_config; break ;;
       3|h|H|haiku|Haiku) START_TIER="haiku"; DEFAULT_TIER="haiku"; save_config; break ;;
-      4|c|C|config|configure) configure_menu ;;
+      4|c|C|config|configure)
+        configure_menu
+        case "$DEFAULT_TIER" in
+          opus) startup_cursor=1 ;;
+          sonnet) startup_cursor=2 ;;
+          haiku) startup_cursor=3 ;;
+        esac
+        ;;
       q|Q|quit|exit)
         clear_screen
         printf '%sCancelled.%s\n' "$DIM" "$RESET" >&2

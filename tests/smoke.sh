@@ -108,6 +108,22 @@ pass "non-interactive mapping and environment precedence"
 [[ "$output" != *"SUBAGENT=test/sonnet-route"* ]] || fail "subagent mapping remains independent"
 pass "all persisted mappings exported independently"
 
+set +e
+bad_tier="$(
+  PATH="$TMP/fake-bin:/usr/bin:/bin" \
+  XDG_CONFIG_HOME="$TMP/config" \
+  JANUS_BASE_URL="https://env.example" \
+  JANUS_API_KEY="env-key" \
+  CLAUDE_JANUS_SKIP_CHECK=1 \
+  CLAUDE_JANUS_TIER=subagent \
+  "$WRAPPER" 2>&1
+)"
+bad_tier_rc=$?
+set -e
+[[ $bad_tier_rc -eq 2 && "$bad_tier" == *"must be opus, sonnet, or haiku"* ]] \
+  || fail "subagent rejected as startup tier"
+pass "subagent remains outside primary tiers"
+
 mkdir -p "$TMP/config-legacy/claude-janus"
 cat > "$TMP/config-legacy/claude-janus/mappings.conf" <<'EOF'
 OPUS_MODEL=legacy/opus
