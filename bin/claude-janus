@@ -14,6 +14,19 @@
 set -euo pipefail
 umask 077
 
+ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+if [[ -f "$ROOT_DIR/lib/janus_api.sh" ]]; then
+  # shellcheck source=lib/janus_api.sh
+  source "$ROOT_DIR/lib/janus_api.sh"
+elif [[ -f "$SCRIPT_DIR/../lib/janus_api.sh" ]]; then
+  # shellcheck source=../lib/janus_api.sh
+  source "$SCRIPT_DIR/../lib/janus_api.sh"
+elif [[ -f "${XDG_DATA_HOME:-$HOME/.local/share}/claude-janus/lib/janus_api.sh" ]]; then
+  # shellcheck disable=SC1091
+  source "${XDG_DATA_HOME:-$HOME/.local/share}/claude-janus/lib/janus_api.sh"
+fi
+
 # ---- Janus connection -------------------------------------------------------
 # Keep credentials out of this script. Environment variables take precedence
 # over the local config file so CI and one-off sessions require no disk secret.
@@ -35,25 +48,94 @@ fi
 
 JANUS_BASE_URL="${ENV_JANUS_BASE_URL:-$CONFIG_JANUS_BASE_URL}"
 JANUS_API_KEY="${ENV_JANUS_API_KEY:-$CONFIG_JANUS_API_KEY}"
-JANUS_BASE_URL="${JANUS_BASE_URL%/}" # Claude appends /v1/messages
 
 BYPASS_ROUTER_CONFIG=0
 for arg in "$@"; do
   case "$arg" in -h|--help|-v|--version) BYPASS_ROUTER_CONFIG=1 ;; esac
 done
 
-if [[ $BYPASS_ROUTER_CONFIG -eq 0 && ( 
-  -z "$JANUS_BASE_URL" || -z "$JANUS_API_KEY" ||
-  "$JANUS_BASE_URL" == *'your-janus-router.example'* ||
-  "$JANUS_API_KEY" == 'replace-with-your-key'
-) ]]; then
-  printf 'claude-janus: router configuration is missing or still uses placeholders\n\n' >&2
-  printf 'Create %s with:\n\n' "$ROUTER_CONFIG" >&2
-  printf '  JANUS_BASE_URL=https://your-janus-router.example\n' >&2
-  printf '  JANUS_API_KEY=replace-with-your-key\n\n' >&2
-  printf 'Or export JANUS_BASE_URL and JANUS_API_KEY for this invocation.\n' >&2
-  exit 2
+if [[ -t 2 && -z "${NO_COLOR:-}" ]]; then
+  RESET=$'\033[0m'; BOLD=$'\033[1m'
+else
+  RESET=""; BOLD=""
 fi
+
+read_reply() {
+  local answer=""
+  if [[ -t 0 ]]; then
+    IFS= read -er answer || answer=""
+  elif { exec 3</dev/tty; } 2>/dev/null; then
+    IFS= read -er answer <&3 || answer=""
+    exec 3<&- 2>/dev/null || true
+  else
+    IFS= read -r answer || answer=""
+  fi
+  printf '%s' "$answer"
+}
+
+is_placeholder_config() {
+  [[ -z "$JANUS_BASE_URL" || -z "$JANUS_API_KEY" ||
+    "$JANUS_BASE_URL" == *'your-janus-router.example'* ||
+    "$JANUS_API_KEY" == 'replace-with-your-key' ]]
+}
+
+write_router_config() {
+  local base key dest
+  base="$(janus_normalize_base_url "$1")"
+  key="$2"
+  dest="$3"
+  mkdir -p "$(dirname -- "$dest")"
+  umask 077
+  printf 'JANUS_BASE_URL=%s\nJANUS_API_KEY=%s\n' "$base" "$key" > "$dest"
+  chmod 600 "$dest" 2>/dev/null || true
+}
+
+run_first_run_setup() {
+  local base key probe
+  if [[ -n "${CLAUDE_JANUS_SETUP_BASE_URL:-}" && -n "${CLAUDE_JANUS_SETUP_API_KEY:-}" ]]; then
+    write_router_config "$CLAUDE_JANUS_SETUP_BASE_URL" "$CLAUDE_JANUS_SETUP_API_KEY" "$ROUTER_CONFIG"
+    JANUS_BASE_URL="$(janus_normalize_base_url "$CLAUDE_JANUS_SETUP_BASE_URL")"
+    JANUS_API_KEY="$CLAUDE_JANUS_SETUP_API_KEY"
+    return 0
+  fi
+  if [[ ! -t 0 || ! -t 2 ]]; then
+    printf 'claude-janus: router configuration is missing or still uses placeholders\n' >&2
+    printf 'Create %s or export JANUS_BASE_URL and JANUS_API_KEY.\n' "$ROUTER_CONFIG" >&2
+    exit 2
+  fi
+  printf '%sFirst-run setup%s\n\n' "$BOLD" "$RESET" >&2
+  for probe in 'http://127.0.0.1:20128' 'http://localhost:20128'; do
+    if curl -fsS -o /dev/null --max-time 1 -A 'claude-janus/1.0' "$probe/v1/health" 2>/dev/null; then
+      printf 'Detected local Janus at %s\n' "$probe" >&2
+      printf 'Use it? [Y/n]: ' >&2
+      reply="$(read_reply)"
+      case "$reply" in ''|y|Y|yes|Yes)
+        base="$probe"
+        break
+        ;;
+      esac
+    fi
+  done
+  if [[ -z "${base:-}" ]]; then
+    printf 'Janus base URL (no /v1 required): ' >&2
+    base="$(read_reply)"
+  fi
+  printf 'Janus API key: ' >&2
+  key="$(read_reply)"
+  if [[ -z "$base" || -z "$key" ]]; then
+    printf 'claude-janus: setup cancelled (empty URL or key)\n' >&2
+    exit 2
+  fi
+  write_router_config "$base" "$key" "$ROUTER_CONFIG"
+  JANUS_BASE_URL="$(janus_normalize_base_url "$base")"
+  JANUS_API_KEY="$key"
+  printf 'Wrote %s\n' "$ROUTER_CONFIG" >&2
+}
+
+if [[ $BYPASS_ROUTER_CONFIG -eq 0 ]] && is_placeholder_config; then
+  run_first_run_setup
+fi
+JANUS_BASE_URL="$(janus_normalize_base_url "$JANUS_BASE_URL")"
 
 # ---- Curated Janus routes ---------------------------------------------------
 CLAUDE_OPUS="openrouter/anthropic/claude-opus-4.8"
@@ -127,20 +209,6 @@ else
   RESET=""; BOLD=""; DIM=""; CYAN=""; BLUE=""; GREEN=""
   YELLOW=""; RED=""; MAGENTA=""
 fi
-
-read_reply() {
-  local answer=""
-  if [[ -t 0 ]]; then
-    # Readline gives custom model fields normal left/right/history editing.
-    IFS= read -er answer || answer=""
-  elif { exec 3</dev/tty; } 2>/dev/null; then
-    IFS= read -er answer <&3 || answer=""
-    exec 3<&- 2>/dev/null || true
-  else
-    IFS= read -r answer || answer=""
-  fi
-  printf '%s' "$answer"
-}
 
 # Keep the terminal non-canonical/no-echo for the complete render→keypress
 # cycle. Using `read -s` alone leaves a tiny race where escape bytes can echo

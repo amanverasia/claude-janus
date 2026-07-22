@@ -32,7 +32,7 @@ set -e
   || fail "placeholder config fails safely"
 pass "placeholder config fails safely"
 
-mkdir -p "$TMP/fake-bin" "$TMP/config/claude-janus"
+mkdir -p "$TMP/fake-bin"
 cat > "$TMP/fake-bin/claude" <<'SH'
 #!/usr/bin/env bash
 printf 'ARGS:'; printf ' <%s>' "$@"; printf '\n'
@@ -42,6 +42,30 @@ printf 'BASE=%s\nTOKEN=%s\nOPUS=%s\nSONNET=%s\nHAIKU=%s\nMODEL=%s\n' \
   "$ANTHROPIC_DEFAULT_HAIKU_MODEL" "${ANTHROPIC_MODEL-<unset>}"
 SH
 chmod +x "$TMP/fake-bin/claude"
+
+mkdir -p "$TMP/config-firstrun"
+set +e
+firstrun="$(
+  PATH="$TMP/fake-bin:/usr/bin:/bin" \
+  XDG_CONFIG_HOME="$TMP/config-firstrun" \
+  CLAUDE_JANUS_SETUP_BASE_URL='http://127.0.0.1:20128/v1' \
+  CLAUDE_JANUS_SETUP_API_KEY='sk-janus-test' \
+  CLAUDE_JANUS_SKIP_CHECK=1 \
+  CLAUDE_JANUS_TIER=sonnet \
+  CLAUDE_JANUS_DRYRUN=1 \
+  "$WRAPPER" 2>&1
+)"
+firstrun_rc=$?
+set -e
+[[ $firstrun_rc -eq 0 ]] || fail "first-run setup dry-run"
+[[ -f "$TMP/config-firstrun/claude-janus/router.conf" ]] || fail "first-run wrote router.conf"
+grep -q 'JANUS_BASE_URL=http://127.0.0.1:20128' "$TMP/config-firstrun/claude-janus/router.conf" \
+  || fail "first-run normalized base URL"
+grep -q 'JANUS_API_KEY=sk-janus-test' "$TMP/config-firstrun/claude-janus/router.conf" \
+  || fail "first-run wrote key"
+pass "first-run non-interactive setup hook"
+
+mkdir -p "$TMP/config/claude-janus"
 cat > "$TMP/config/claude-janus/router.conf" <<'EOF'
 JANUS_BASE_URL=https://config.example
 JANUS_API_KEY=config-key
