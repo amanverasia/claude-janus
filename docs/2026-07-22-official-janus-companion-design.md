@@ -84,7 +84,7 @@ For the child Claude Code process only:
 | `ANTHROPIC_DEFAULT_OPUS_MODEL` | Saved Opus mapping |
 | `ANTHROPIC_DEFAULT_SONNET_MODEL` | Saved Sonnet mapping |
 | `ANTHROPIC_DEFAULT_HAIKU_MODEL` | Saved Haiku mapping |
-| `CLAUDE_CODE_SUBAGENT_MODEL` | Follow existing behavior (typically Haiku mapping) |
+| `CLAUDE_CODE_SUBAGENT_MODEL` | Saved independent subagent mapping; legacy mapping files fall back to their effective Sonnet mapping |
 | `ANTHROPIC_MODEL` | Left unset |
 
 Start Claude Code with `--model opus|sonnet|haiku`, never a raw Janus model id as the primary `--model` flag.
