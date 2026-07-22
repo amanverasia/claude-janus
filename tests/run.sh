@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+"$ROOT/tests/test_janus_api.sh"
 "$ROOT/tests/smoke.sh"
-python3 "$ROOT/tests/arrow_keys.py"
+"$ROOT/tests/arrow_keys.py"

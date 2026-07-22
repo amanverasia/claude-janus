@@ -1,0 +1,7 @@
+{
+  "data": [
+    {"id": "claude-sonnet-4", "type": "model", "display_name": "claude-sonnet-4"},
+    {"id": "combo-fast", "type": "model", "display_name": "combo-fast"}
+  ],
+  "has_more": false
+}

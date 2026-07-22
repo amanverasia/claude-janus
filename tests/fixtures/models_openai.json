@@ -1,0 +1,8 @@
+{
+  "object": "list",
+  "data": [
+    {"id": "openrouter/anthropic/claude-sonnet-4", "object": "model"},
+    {"id": "deepseek/deepseek-v4-pro", "object": "model"},
+    {"id": "combo-fast", "object": "model"}
+  ]
+}
