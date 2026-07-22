@@ -115,4 +115,28 @@ help_out="$(PATH="$TMP/fake-bin:/usr/bin:/bin" HOME="$TMP/help-home" XDG_CONFIG_
   || fail "help passthrough"
 pass "help passthrough without router config"
 
+mkdir -p "$TMP/config-strict/claude-janus" "$TMP/fake-bin-strict"
+cat > "$TMP/fake-bin-strict/curl" <<'SH'
+#!/usr/bin/env bash
+exit 7
+SH
+chmod +x "$TMP/fake-bin-strict/curl"
+cat > "$TMP/config-strict/claude-janus/router.conf" <<'EOF'
+JANUS_BASE_URL=https://down.example
+JANUS_API_KEY=k
+EOF
+set +e
+strict="$(
+  PATH="$TMP/fake-bin-strict:$TMP/fake-bin:/usr/bin:/bin" \
+  XDG_CONFIG_HOME="$TMP/config-strict" \
+  CLAUDE_JANUS_TIER=sonnet \
+  CLAUDE_JANUS_STRICT_CHECK=1 \
+  CLAUDE_JANUS_DRYRUN=1 \
+  "$WRAPPER" 2>&1
+)"
+strict_rc=$?
+set -e
+[[ $strict_rc -ne 0 && "$strict" == *"Could not reach"* ]] || fail "strict health check"
+pass "strict health check fails closed"
+
 printf 'All smoke tests passed.\n'

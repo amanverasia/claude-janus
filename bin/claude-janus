@@ -718,12 +718,19 @@ if [[ $BYPASS_ROUTER_CONFIG -eq 0 ]]; then
     "$(model_label "$SELECTED_MODEL")" >&2
 fi
 
-# Authenticated reachability check; failure warns but never prevents launch.
 if [[ $BYPASS_ROUTER_CONFIG -eq 0 && -z "${CLAUDE_JANUS_SKIP_CHECK:-}" ]] && command -v curl >/dev/null 2>&1; then
-  if ! curl -fsS -o /dev/null --max-time 3 \
-    -H "Authorization: Bearer $JANUS_API_KEY" \
-    "$JANUS_BASE_URL/v1/models"; then
-    printf '\033[33m! Could not reach authenticated Janus /v1/models (is Tailscale up?). Launching anyway.\033[0m\n' >&2
+  if ! janus_check_health "$JANUS_BASE_URL" "$JANUS_API_KEY"; then
+    rc=$?
+    case "$rc" in
+      1) msg="Janus /v1/health unreachable at $JANUS_BASE_URL" ;;
+      2) msg="Authenticated /v1/models failed (check JANUS_API_KEY / allowlist)" ;;
+      *) msg="Could not reach Janus at $JANUS_BASE_URL" ;;
+    esac
+    if [[ -n "${CLAUDE_JANUS_STRICT_CHECK:-}" ]]; then
+      printf '%s× %s%s\n' "$RED" "$msg" "$RESET" >&2
+      exit 2
+    fi
+    printf '%s! %s — launching anyway.%s\n' "$YELLOW" "$msg" "$RESET" >&2
   fi
 fi
 
